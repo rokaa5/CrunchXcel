@@ -105,6 +105,12 @@ class Membership(AppBaseModel):
     request_id: str | None = Field(default=None, max_length=64)
 
 
+class MembershipRegistration(Membership):
+    # New customer details are created atomically with the paid membership.
+    customer_id: int | None = Field(default=None, gt=0)
+    new_customer: Customer | None = None
+
+
 CATEGORY_TO_TYPE = {
     "Membership": "Service",
     "Gym Access": "Service",
@@ -235,7 +241,8 @@ class Trainer(AppBaseModel):
 
 
 class TrainerSessionCreate(AppBaseModel):
-    customer_id: int | None = None
+    customer_id: int | None = Field(default=None, gt=0)
+    new_customer: Customer | None = None
     trainer_id: int = Field(gt=0)
     product_id: int = Field(gt=0)
     session_datetime: str | None = None

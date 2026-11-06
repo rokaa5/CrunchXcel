@@ -26,6 +26,7 @@ from models import (
     CATEGORY_TO_TYPE,
     Customer,
     Membership,
+    MembershipRegistration,
     Payment,
     Product,
     Purchase,
@@ -372,6 +373,7 @@ def enrich_customers(db, records):
 
         # An active yearly membership qualifies for member-specific rates.
         record["is_active_yearly"] = (y_status == "Active")
+        record["is_non_yearly"] = (y_status != "Active")
 
         has_payments = bool(db.execute(
             "SELECT 1 FROM payments WHERE customer_id = ? LIMIT 1",
@@ -434,6 +436,7 @@ def list_customers(first_name: str = "", last_name: str = "", search: str = "", 
             "renew_yearly": "can_renew_yearly",
             "renew_monthly": "can_renew_monthly",
             "active_yearly": "is_active_yearly",
+            "non_yearly": "is_non_yearly",
             "delete": "can_delete",
         }
         if eligibility in filter_map:
@@ -461,6 +464,7 @@ def check_customers_exist(eligibility: str = ""):
                 "renew_yearly": "can_renew_yearly",
                 "renew_monthly": "can_renew_monthly",
                 "active_yearly": "is_active_yearly",
+            "non_yearly": "is_non_yearly",
                 "delete": "can_delete",
             }
             if eligibility in filter_map:
@@ -664,7 +668,7 @@ def check_memberships_exist():
         return {"exists": bool(row["has_records"])}
 
 @app.post("/memberships", status_code=201)
-def create_membership(data: Membership):
+def create_membership(data: MembershipRegistration):
     if data.end_date < data.start_date:
         raise HTTPException(422, "End date must not precede start date")
 
@@ -677,7 +681,25 @@ def create_membership(data: Membership):
                     sale_res = get_sale_formatted(db, existing_sale[0])
                     return {"id": mem["id"], "sale_id": existing_sale[0], "sale": sale_res, **dict(mem)}
 
-        cust = require_record(db, "customers", data.customer_id)
+        if (data.customer_id is None) == (data.new_customer is None):
+            raise HTTPException(422, "Choose an existing customer ID or provide new customer details.")
+
+        if data.new_customer is not None:
+            new = data.new_customer
+            duplicate = db.execute(
+                "SELECT id FROM customers WHERE phone = ?", (new.phone,)
+            ).fetchone()
+            if duplicate:
+                raise HTTPException(409, f"Phone already registered under customer ID {duplicate['id']}. Select the existing customer.")
+            cursor = db.execute(
+                "INSERT INTO customers(first_name, last_name, phone) VALUES (?, ?, ?)",
+                (new.first_name, new.last_name, new.phone),
+            )
+            customer_id = cursor.lastrowid
+        else:
+            customer_id = data.customer_id
+
+        cust = require_record(db, "customers", customer_id)
         customer_name = f"{cust['first_name']} {cust['last_name']}".strip()
         today_str = ph_today().isoformat()
 
@@ -685,7 +707,7 @@ def create_membership(data: Membership):
             existing_m = db.execute(
                 """SELECT 1 FROM memberships
                    WHERE customer_id = ? AND plan IN ('Monthly session', 'Member session, monthly') AND cancelled_at IS NULL LIMIT 1""",
-                (data.customer_id,)
+                (customer_id,)
             ).fetchone()
             if existing_m:
                 raise HTTPException(409, "Customer already has a monthly session record. Use renew instead.")
@@ -697,7 +719,7 @@ def create_membership(data: Membership):
             # Yearly membership
             existing = db.execute(
                 "SELECT 1 FROM memberships WHERE customer_id = ? AND plan = 'Yearly membership' AND cancelled_at IS NULL LIMIT 1",
-                (data.customer_id,)
+                (customer_id,)
             ).fetchone()
             if existing:
                 raise HTTPException(409, "Customer already has a yearly membership. Use renew instead.")
@@ -737,7 +759,7 @@ def create_membership(data: Membership):
                 subtotal_cents, discount_cents, membership_status, request_id, kind, created_at
             ) VALUES (?, ?, ?, 'Member', ?, ?, ?, ?, 'Completed', ?, ?, 'Active', ?, 'membership', ?)
         """, (
-            receipt_no, data.customer_id, customer_name,
+            receipt_no, customer_id, customer_name,
             total_cents, method, tendered_cents, change_cents,
             subtotal_cents, discount_cents, data.request_id, created_at_str
         ))
@@ -755,7 +777,7 @@ def create_membership(data: Membership):
             """INSERT INTO memberships
                (customer_id, plan, start_date, end_date, sale_id, amount_cents, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (data.customer_id, data.plan,
+            (customer_id, data.plan,
              data.start_date.isoformat(), data.end_date.isoformat(),
              sale_id, total_cents, created_at_str)
         )
@@ -765,7 +787,7 @@ def create_membership(data: Membership):
             """INSERT INTO payments
                (customer_id, description, amount_cents, method, created_at)
                VALUES (?, ?, ?, ?, ?)""",
-            (data.customer_id, f"Plan: {data.plan}", price_cents, method, created_at_str)
+            (customer_id, f"Plan: {data.plan}", price_cents, method, created_at_str)
         )
         payment_id = p_cur.lastrowid
 
@@ -775,7 +797,8 @@ def create_membership(data: Membership):
             "sale_id": sale_id,
             "payment_id": payment_id,
             "sale": sale_res,
-            **data.model_dump(mode="json")
+            **data.model_dump(mode="json"),
+            "customer_id": customer_id,
         }
 
 
@@ -1471,7 +1494,6 @@ def customer_trainer_sessions_count(customer_id: int):
 
 @app.post("/trainer-sessions", status_code=201)
 def create_trainer_session(data: TrainerSessionCreate):
-    today_str = ph_today().isoformat()
     now_dt = ph_now()
 
     if data.session_datetime:
@@ -1484,9 +1506,7 @@ def create_trainer_session(data: TrainerSessionCreate):
             except ValueError:
                 pass
         if not parsed_dt:
-            raise HTTPException(422, "Enter a valid date and time that is not in the future")
-        if parsed_dt > now_dt:
-            raise HTTPException(422, "Enter a valid date and time that is not in the future")
+            raise HTTPException(422, "Enter a valid session date and time (YYYY-MM-DD HH:MM)")
         formatted_session_dt = parsed_dt.strftime("%Y-%m-%d %H:%M")
     else:
         formatted_session_dt = now_dt.strftime("%Y-%m-%d %H:%M")
@@ -1501,17 +1521,31 @@ def create_trainer_session(data: TrainerSessionCreate):
         if not trainer:
             raise HTTPException(422, "Invalid choice")
 
-        if data.customer_id is not None:
-            cust = db.execute("SELECT * FROM customers WHERE id=?", (data.customer_id,)).fetchone()
+        if (data.customer_id is None) == (data.new_customer is None):
+            raise HTTPException(422, "A trainer booking requires an existing customer or new customer details.")
+
+        if data.new_customer is not None:
+            new = data.new_customer
+            duplicate = db.execute(
+                "SELECT id FROM customers WHERE phone = ?", (new.phone,)
+            ).fetchone()
+            if duplicate:
+                raise HTTPException(409, f"Phone already registered under customer ID {duplicate['id']}. Select the existing customer.")
+            cursor = db.execute(
+                "INSERT INTO customers(first_name, last_name, phone) VALUES (?, ?, ?)",
+                (new.first_name, new.last_name, new.phone),
+            )
+            customer_id = cursor.lastrowid
+            customer_type = "Non-member"
+            customer_name = f"{new.first_name} {new.last_name}"
+        else:
+            customer_id = data.customer_id
+            cust = db.execute("SELECT * FROM customers WHERE id=?", (customer_id,)).fetchone()
             if not cust:
-                raise HTTPException(404, f"Customer with ID {data.customer_id} was not found.")
-            # Use the same active/cancelled membership validation as purchase quotes.
-            member_status = membership_summary(db, data.customer_id)
+                raise HTTPException(404, f"Customer with ID {customer_id} was not found.")
+            member_status = membership_summary(db, customer_id)
             customer_type = "Member" if member_status["yearly_status"] == "Active" else "Non-member"
             customer_name = f"{cust['first_name']} {cust['last_name']}"
-        else:
-            customer_type = "Non-member"
-            customer_name = "Walk-in"
 
         prod = db.execute("SELECT * FROM products WHERE id=?", (data.product_id,)).fetchone()
         if not prod or prod["is_active"] != 1 or prod["category"] != "Coaching":
@@ -1542,7 +1576,7 @@ def create_trainer_session(data: TrainerSessionCreate):
                                payment_method, amount_tendered_cents, change_cents, status,
                                subtotal_cents, discount_cents, membership_status, request_id, kind, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Completed', ?, 0, ?, ?, 'trainer', ?)
-        """, (receipt_no, data.customer_id, customer_name, customer_type, price_cents,
+        """, (receipt_no, customer_id, customer_name, customer_type, price_cents,
               data.payment_method, tendered_cents, change_cents, price_cents, customer_type, data.request_id, created_at_str))
         sale_id = cur.lastrowid
 
@@ -1554,7 +1588,7 @@ def create_trainer_session(data: TrainerSessionCreate):
         cur_ts = db.execute("""
             INSERT INTO trainer_sessions (sale_id, customer_id, customer_name, product_id, trainer_id, trainer_name, session_date_time)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (sale_id, data.customer_id, customer_name, prod["id"], trainer["id"], trainer["name"], formatted_session_dt))
+        """, (sale_id, customer_id, customer_name, prod["id"], trainer["id"], trainer["name"], formatted_session_dt))
         ts_id = cur_ts.lastrowid
 
         return {
@@ -1562,7 +1596,7 @@ def create_trainer_session(data: TrainerSessionCreate):
             "sale_id": sale_id,
             "receipt_no": receipt_no,
             "created_at": ph_now().strftime("%Y-%m-%d %H:%M"),
-            "customer_id": data.customer_id,
+            "customer_id": customer_id,
             "customer_name": customer_name,
             "customer_type": customer_type,
             "session_type": prod["name"],
