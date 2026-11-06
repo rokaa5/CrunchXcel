@@ -9,7 +9,7 @@ DB_PATH = Path(__file__).resolve().parent / DB_NAME
 
 
 def get_table_counts(cursor):
-    tables = ["trainer_sessions", "sale_items", "sales", "purchases", "payments", "memberships", "customers", "products"]
+    tables = ["visits", "trainer_sessions", "sale_items", "sales", "purchases", "payments", "memberships", "customers", "products"]
     counts = {}
     for table in tables:
         try:
@@ -58,6 +58,7 @@ def main():
     # 4. Single atomic transaction
     try:
         cur.execute("BEGIN TRANSACTION")
+        cur.execute("DELETE FROM visits")
         cur.execute("DELETE FROM trainer_sessions")
         cur.execute("DELETE FROM sale_items")
         cur.execute("DELETE FROM sales")
@@ -67,7 +68,7 @@ def main():
         cur.execute("DELETE FROM customers")
         cur.execute("""
             DELETE FROM sqlite_sequence 
-            WHERE name IN ('trainer_sessions', 'sale_items', 'sales', 'purchases', 'payments', 'memberships', 'customers')
+            WHERE name IN ('visits', 'trainer_sessions', 'sale_items', 'sales', 'purchases', 'payments', 'memberships', 'customers')
         """)
         conn.commit()
     except Exception as e:
@@ -89,7 +90,8 @@ def main():
     print(f"- products (catalog): {counts_after['products']} rows")
 
     cleared = (
-        counts_after['trainer_sessions'] == 0
+        counts_after['visits'] == 0
+        and counts_after['trainer_sessions'] == 0
         and counts_after['sale_items'] == 0
         and counts_after['sales'] == 0
         and counts_after['purchases'] == 0

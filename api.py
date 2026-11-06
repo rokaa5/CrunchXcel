@@ -35,6 +35,10 @@ from models import (
     SaleVoid,
     Trainer,
     TrainerSessionCreate,
+    DailySessionCreate,
+    QuoteRequest,
+    ph_now,
+    ph_today,
 )
 
 
@@ -148,13 +152,191 @@ def compute_customer_plan_status(mems, plan_name, today_str):
         return "Expired", latest_expired["end_date"], False
 
 
+YEARLY_PLAN = "Yearly membership"
+MONTHLY_PLAN = "Monthly session"
+MONTHLY_PLAN_NAMES = ("Monthly session", "Member session, monthly")
+DAILY_PRODUCT_NAME = "Daily session"
+
+# Plans that already cover every daily visit while they are valid.
+# Yearly membership is a membership fee (member rates), not free daily access.
+GYM_ACCESS_PLANS = ("Monthly",)
+
+STATUS_LABELS = {
+    "Active": "Active",
+    "Expired": "Expired",
+    "Upcoming": "Not Yet Active",
+    "None": "Not Registered",
+}
+
+
+def plan_label(status, has_cancelled=False):
+    if status == "None" and has_cancelled:
+        return "Cancelled"
+    return STATUS_LABELS.get(status, status)
+
+
+def canonical_plan(plan):
+    if plan == YEARLY_PLAN:
+        return YEARLY_PLAN
+    if plan in MONTHLY_PLAN_NAMES:
+        return MONTHLY_PLAN
+    return None
+
+
+def membership_summary(db, customer_id):
+    """Current status of both plans, from the customer's records. Cancelled records are ignored."""
+    today = ph_today().isoformat()
+    all_mems = rows(db.execute(
+        """SELECT id, plan, start_date, end_date, cancelled_at
+           FROM memberships WHERE customer_id = ?
+           ORDER BY start_date ASC, id ASC""",
+        (customer_id,)
+    ))
+    mems = [m for m in all_mems if not m["cancelled_at"]]
+    y_status, y_end, y_waiting = compute_customer_plan_status(mems, YEARLY_PLAN, today)
+    m_status, m_end, m_waiting = compute_customer_plan_status(mems, MONTHLY_PLAN, today)
+    y_cancelled = any(m["cancelled_at"] and m["plan"] == YEARLY_PLAN for m in all_mems)
+    m_cancelled = any(m["cancelled_at"] and m["plan"] in MONTHLY_PLAN_NAMES for m in all_mems)
+    qualifying = set()
+    if y_status == "Active":
+        qualifying.add("Yearly")
+    if m_status == "Active":
+        qualifying.add("Monthly")
+    return {
+        "yearly_status": y_status,
+        "yearly_end_date": y_end,
+        "yearly_has_waiting": y_waiting,
+        "yearly_label": plan_label(y_status, y_cancelled),
+        "monthly_status": m_status,
+        "monthly_end_date": m_end,
+        "monthly_has_waiting": m_waiting,
+        "monthly_label": plan_label(m_status, m_cancelled),
+        "qualifying_types": sorted(qualifying),
+        "has_gym_access": any(t in GYM_ACCESS_PLANS for t in qualifying),
+    }
+
+
+def calculate_discounts(db, customer_id, items):
+    """
+    items: iterable of objects or dicts with product_id, quantity
+    returns dict with customer details, membership summary, enriched items,
+    subtotal_cents, discount_cents, total_cents
+    """
+    if customer_id is not None:
+        cust = db.execute("SELECT id, first_name, last_name, phone FROM customers WHERE id = ?", (customer_id,)).fetchone()
+        if not cust:
+            raise HTTPException(404, f"Customer with ID {customer_id} was not found.")
+        customer_name = f"{cust['first_name']} {cust['last_name']}".strip()
+        mem_sum = membership_summary(db, customer_id)
+        if mem_sum["yearly_status"] == "Active" or mem_sum["monthly_status"] == "Active":
+            membership_status = "Active"
+        elif mem_sum["yearly_status"] == "Upcoming" or mem_sum["monthly_status"] == "Upcoming":
+            membership_status = "Not Yet Active"
+        elif mem_sum["yearly_label"] == "Cancelled" or mem_sum["monthly_label"] == "Cancelled":
+            membership_status = "Cancelled"
+        elif mem_sum["yearly_status"] == "Expired" or mem_sum["monthly_status"] == "Expired":
+            membership_status = "Expired"
+        else:
+            membership_status = "Not Registered"
+    else:
+        customer_name = "Walk-in"
+        membership_status = "Not Registered"
+        mem_sum = {
+            "yearly_status": "None",
+            "yearly_end_date": None,
+            "yearly_has_waiting": False,
+            "yearly_label": "Not Registered",
+            "monthly_status": "None",
+            "monthly_end_date": None,
+            "monthly_has_waiting": False,
+            "monthly_label": "Not Registered",
+            "qualifying_types": [],
+            "has_gym_access": False,
+        }
+
+    qualifying_set = set(mem_sum["qualifying_types"])
+    enriched_items = []
+    total_subtotal_cents = 0
+    total_discount_cents = 0
+
+    for item in items:
+        pid = getattr(item, "product_id", None) if not isinstance(item, dict) else item.get("product_id")
+        qty = getattr(item, "quantity", None) if not isinstance(item, dict) else item.get("quantity")
+        if qty is None or qty < 1:
+            qty = 1
+
+        p = db.execute("SELECT id, name, category, price_cents, is_active FROM products WHERE id = ?", (pid,)).fetchone()
+        if not p or p["is_active"] != 1:
+            raise HTTPException(422, f"Item with ID {pid} is not available")
+
+        unit_price_cents = p["price_cents"]
+
+        rules = rows(db.execute(
+            "SELECT membership_type, discount_type, value FROM discount_rules WHERE product_id = ? AND is_active = 1",
+            (pid,)
+        ))
+        best_disc_unit = 0
+        for r in rules:
+            if r["membership_type"] in qualifying_set:
+                dtype = r["discount_type"].lower()
+                val = r["value"]
+                if dtype == "fixed":
+                    cand = min(unit_price_cents, val)
+                elif dtype in ("percent", "percentage"):
+                    cand = int(round(unit_price_cents * (val / 100.0)))
+                else:
+                    cand = 0
+                if cand > best_disc_unit:
+                    best_disc_unit = cand
+
+        final_unit_price = unit_price_cents - best_disc_unit
+        subtotal_cents = unit_price_cents * qty
+        discount_cents = best_disc_unit * qty
+        line_total_cents = subtotal_cents - discount_cents
+
+        total_subtotal_cents += subtotal_cents
+        total_discount_cents += discount_cents
+
+        enriched_items.append({
+            "product_id": p["id"],
+            "name": p["name"],
+            "item_name": p["name"],
+            "category": p["category"],
+            "quantity": qty,
+            "unit_price_cents": unit_price_cents,
+            "unit_price": money(unit_price_cents),
+            "discount_unit_cents": best_disc_unit,
+            "discount_unit": money(best_disc_unit),
+            "final_unit_price_cents": final_unit_price,
+            "final_unit_price": money(final_unit_price),
+            "subtotal_cents": subtotal_cents,
+            "subtotal": money(subtotal_cents),
+            "discount_cents": discount_cents,
+            "discount": money(discount_cents),
+            "total_cents": line_total_cents,
+            "total": money(line_total_cents),
+        })
+
+    final_total_cents = total_subtotal_cents - total_discount_cents
+    return {
+        "customer_id": customer_id,
+        "customer_name": customer_name,
+        "membership_status": membership_status,
+        "mem_sum": mem_sum,
+        "items": enriched_items,
+        "subtotal_cents": total_subtotal_cents,
+        "discount_cents": total_discount_cents,
+        "total_cents": final_total_cents,
+    }
+
+
 def enrich_customers(db, records):
-    today = date.today().isoformat()
+    today = ph_today().isoformat()
     for record in records:
         mems = rows(db.execute(
             """SELECT id, plan, start_date, end_date
                FROM memberships
-               WHERE customer_id = ?
+               WHERE customer_id = ? AND cancelled_at IS NULL
                ORDER BY start_date ASC, id ASC""",
             (record["id"],)
         ))
@@ -172,6 +354,14 @@ def enrich_customers(db, records):
         record["monthly_end_date"] = m_end
         record["monthly_has_waiting"] = m_waiting
 
+        last_visit = db.execute(
+            """SELECT MAX(v.check_in_at) FROM visits v
+               LEFT JOIN sales s ON s.id = v.sale_id
+               WHERE v.customer_id = ? AND (s.id IS NULL OR s.status = 'Completed')""",
+            (record["id"],)
+        ).fetchone()[0]
+        record["last_visit"] = last_visit[:10] if last_visit else None
+
         # Register eligibility:
         record["can_register_yearly"] = (y_status == "None")
         record["can_register_monthly"] = (m_status == "None")
@@ -184,7 +374,15 @@ def enrich_customers(db, records):
             "SELECT 1 FROM payments WHERE customer_id = ? LIMIT 1",
             (record["id"],)
         ).fetchone())
-        record["has_history"] = bool(mems) or has_payments
+        has_sales = bool(db.execute(
+            "SELECT 1 FROM sales WHERE customer_id = ? LIMIT 1",
+            (record["id"],)
+        ).fetchone())
+        has_any_membership = bool(db.execute(
+            "SELECT 1 FROM memberships WHERE customer_id = ? LIMIT 1",
+            (record["id"],)
+        ).fetchone())
+        record["has_history"] = has_any_membership or has_payments or has_sales
         record["can_delete"] = not record["has_history"]
 
         # Backward compatibility aliases
@@ -206,12 +404,21 @@ def list_customers(first_name: str = "", last_name: str = "", search: str = "", 
                 (first_name, last_name)
             ))
         elif search:
-            records = rows(db.execute(
-                """SELECT * FROM customers
-                   WHERE first_name LIKE ? OR last_name LIKE ? OR phone LIKE ?
-                   ORDER BY id""",
-                (f"%{search}%", f"%{search}%", f"%{search}%")
-            ))
+            s_clean = search.strip()
+            if s_clean.isdigit():
+                records = rows(db.execute(
+                    """SELECT * FROM customers
+                       WHERE id = ? OR first_name LIKE ? OR last_name LIKE ? OR phone LIKE ?
+                       ORDER BY id""",
+                    (int(s_clean), f"%{search}%", f"%{search}%", f"%{search}%")
+                ))
+            else:
+                records = rows(db.execute(
+                    """SELECT * FROM customers
+                       WHERE first_name LIKE ? OR last_name LIKE ? OR phone LIKE ?
+                       ORDER BY id""",
+                    (f"%{search}%", f"%{search}%", f"%{search}%")
+                ))
         else:
             records = rows(db.execute("SELECT * FROM customers ORDER BY id"))
         enriched = enrich_customers(db, records)
@@ -262,6 +469,143 @@ def get_customer(customer_id: int):
     with connect() as db:
         rec = require_record(db, "customers", customer_id)
         return enrich_customers(db, [rec])[0]
+
+
+@app.get("/customers/{customer_id}/overview")
+def get_customer_overview(customer_id: int):
+    with connect() as db:
+        cust = require_record(db, "customers", customer_id)
+        today = ph_today().isoformat()
+        mem_sum = membership_summary(db, customer_id)
+
+        today_visit = db.execute(
+            "SELECT id FROM visits WHERE customer_id = ? AND date(check_in_at) = ? LIMIT 1",
+            (customer_id, today)
+        ).fetchone()
+        if today_visit:
+            daily_access = "Active (Today)"
+        elif mem_sum["has_gym_access"]:
+            daily_access = "Active (Monthly Plan)"
+        else:
+            daily_access = "None"
+
+        if "Yearly" in mem_sum["qualifying_types"]:
+            discount_eligibility = "Yearly Member Rate (₱20.00 off daily)"
+        else:
+            discount_eligibility = "Standard / None"
+
+        total_purchases = db.execute(
+            "SELECT COUNT(*) FROM sales WHERE customer_id = ? AND status = 'Completed'",
+            (customer_id,)
+        ).fetchone()[0]
+
+        sales_cents = db.execute(
+            "SELECT COALESCE(SUM(total_cents), 0) FROM sales WHERE customer_id = ? AND status = 'Completed'",
+            (customer_id,)
+        ).fetchone()[0]
+
+        legacy_mems_cents = db.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) FROM memberships WHERE customer_id = ? AND sale_id IS NULL AND cancelled_at IS NULL",
+            (customer_id,)
+        ).fetchone()[0]
+        lifetime_cents = sales_cents + legacy_mems_cents
+
+        total_visits = db.execute(
+            "SELECT COUNT(*) FROM visits WHERE customer_id = ?",
+            (customer_id,)
+        ).fetchone()[0]
+
+        last_visit_row = db.execute(
+            "SELECT check_in_at FROM visits WHERE customer_id = ? ORDER BY check_in_at DESC LIMIT 1",
+            (customer_id,)
+        ).fetchone()
+        last_visit = last_visit_row[0] if last_visit_row else None
+
+        return {
+            "id": cust["id"],
+            "name": f"{cust['first_name']} {cust['last_name']}".strip(),
+            "first_name": cust["first_name"],
+            "last_name": cust["last_name"],
+            "phone": cust["phone"],
+            "yearly_status": mem_sum["yearly_status"],
+            "yearly_label": mem_sum["yearly_label"],
+            "yearly_end_date": mem_sum["yearly_end_date"],
+            "monthly_status": mem_sum["monthly_status"],
+            "monthly_label": mem_sum["monthly_label"],
+            "monthly_end_date": mem_sum["monthly_end_date"],
+            "daily_access": daily_access,
+            "has_gym_access": mem_sum["has_gym_access"],
+            "discount_eligibility": discount_eligibility,
+            "total_purchases": total_purchases,
+            "lifetime_spending_cents": lifetime_cents,
+            "lifetime_spending": money(lifetime_cents),
+            "total_visits": total_visits,
+            "last_visit": last_visit,
+        }
+
+
+@app.get("/customers/{customer_id}/memberships")
+def get_customer_memberships(customer_id: int):
+    today = ph_today().isoformat()
+    with connect() as db:
+        require_record(db, "customers", customer_id)
+        mems = rows(db.execute("""
+            SELECT m.*, s.receipt_no, s.payment_method
+            FROM memberships m
+            LEFT JOIN sales s ON s.id = m.sale_id
+            WHERE m.customer_id = ?
+            ORDER BY m.start_date DESC, m.id DESC
+        """, (customer_id,)))
+        for m in mems:
+            if m["cancelled_at"]:
+                m["status"] = "Cancelled"
+            elif m["start_date"] <= today <= m["end_date"]:
+                m["status"] = "Active"
+            elif m["end_date"] < today:
+                m["status"] = "Expired"
+            else:
+                m["status"] = "Not Yet Active"
+            m["amount"] = money(m.get("amount_cents") or 0)
+        return mems
+
+
+@app.get("/customers/{customer_id}/sales")
+def get_customer_sales(customer_id: int):
+    with connect() as db:
+        require_record(db, "customers", customer_id)
+        sales_rows = rows(db.execute("""
+            SELECT * FROM sales
+            WHERE customer_id = ?
+            ORDER BY id DESC
+        """, (customer_id,)))
+        for s in sales_rows:
+            sale_id = s["id"]
+            items = rows(db.execute("SELECT * FROM sale_items WHERE sale_id = ?", (sale_id,)))
+            s["total"] = money(s.pop("total_cents"))
+            s["amount_tendered"] = money(s.pop("amount_tendered_cents"))
+            s["change"] = money(s.pop("change_cents"))
+            s["subtotal"] = money(s.pop("subtotal_cents") if s.get("subtotal_cents") is not None else 0)
+            s["discount"] = money(s.pop("discount_cents") if s.get("discount_cents") is not None else 0)
+            for it in items:
+                it["unit_price"] = money(it.pop("unit_price_cents"))
+                it["line_amount"] = money(it.pop("line_amount_cents"))
+                it["discount"] = money(it.pop("discount_cents") if it.get("discount_cents") is not None else 0)
+            s["items"] = items
+        return sales_rows
+
+
+@app.get("/customers/{customer_id}/visits")
+def get_customer_visits(customer_id: int):
+    with connect() as db:
+        require_record(db, "customers", customer_id)
+        visits = rows(db.execute("""
+            SELECT v.*, s.receipt_no
+            FROM visits v
+            LEFT JOIN sales s ON s.id = v.sale_id
+            WHERE v.customer_id = ?
+            ORDER BY v.check_in_at DESC
+        """, (customer_id,)))
+        return visits
 
 
 @app.put("/customers/{customer_id}")
@@ -320,50 +664,112 @@ def create_membership(data: Membership):
         raise HTTPException(422, "End date must not precede start date")
 
     with connect() as db:
-        require_record(db, "customers", data.customer_id)
-        today_str = date.today().isoformat()
+        if data.request_id:
+            existing_sale = db.execute("SELECT id FROM sales WHERE request_id = ?", (data.request_id,)).fetchone()
+            if existing_sale:
+                mem = db.execute("SELECT * FROM memberships WHERE sale_id = ?", (existing_sale[0],)).fetchone()
+                if mem:
+                    sale_res = get_sale_formatted(db, existing_sale[0])
+                    return {"id": mem["id"], "sale_id": existing_sale[0], "sale": sale_res, **dict(mem)}
+
+        cust = require_record(db, "customers", data.customer_id)
+        customer_name = f"{cust['first_name']} {cust['last_name']}".strip()
+        today_str = ph_today().isoformat()
 
         if data.plan in ("Monthly session", "Member session, monthly"):
             existing_m = db.execute(
                 """SELECT 1 FROM memberships
-                   WHERE customer_id = ? AND plan IN ('Monthly session', 'Member session, monthly') LIMIT 1""",
+                   WHERE customer_id = ? AND plan IN ('Monthly session', 'Member session, monthly') AND cancelled_at IS NULL LIMIT 1""",
                 (data.customer_id,)
             ).fetchone()
             if existing_m:
                 raise HTTPException(409, "Customer already has a monthly session record. Use renew instead.")
+            prod = db.execute("SELECT id, price_cents FROM products WHERE name IN ('Monthly session', 'Member session, monthly')").fetchone()
+            price_cents = prod["price_cents"] if prod else 120000
+            prod_id = prod["id"] if prod else None
+            prod_cat = "Gym Access"
         else:
             # Yearly membership
             existing = db.execute(
-                "SELECT 1 FROM memberships WHERE customer_id = ? AND plan = 'Yearly membership' LIMIT 1",
+                "SELECT 1 FROM memberships WHERE customer_id = ? AND plan = 'Yearly membership' AND cancelled_at IS NULL LIMIT 1",
                 (data.customer_id,)
             ).fetchone()
             if existing:
                 raise HTTPException(409, "Customer already has a yearly membership. Use renew instead.")
+            prod = db.execute("SELECT id, price_cents FROM products WHERE name = 'Yearly membership'").fetchone()
+            price_cents = prod["price_cents"] if prod else 30000
+            prod_id = prod["id"] if prod else None
+            prod_cat = "Membership"
+
+        total_cents = price_cents
+        subtotal_cents = price_cents
+        discount_cents = 0
+
+        method = "Cash"
+        if data.method:
+            method = "Cash" if data.method.lower().startswith("c") else "E-Wallet"
+
+        if data.amount_tendered is not None:
+            tendered_cents = cents(data.amount_tendered)
+        else:
+            tendered_cents = total_cents
+
+        if method == "Cash":
+            if tendered_cents < total_cents:
+                raise HTTPException(422, "Amount is less than the total due")
+            change_cents = tendered_cents - total_cents
+        else:
+            tendered_cents = total_cents
+            change_cents = 0
+
+        created_at_str = ph_now().strftime("%Y-%m-%d %H:%M:%S")
+        receipt_no = next_receipt_no(db)
+
+        s_cur = db.execute("""
+            INSERT INTO sales (
+                receipt_no, customer_id, customer_name, customer_type, total_cents,
+                payment_method, amount_tendered_cents, change_cents, status,
+                subtotal_cents, discount_cents, membership_status, request_id, kind, created_at
+            ) VALUES (?, ?, ?, 'Member', ?, ?, ?, ?, 'Completed', ?, ?, 'Active', ?, 'membership', ?)
+        """, (
+            receipt_no, data.customer_id, customer_name,
+            total_cents, method, tendered_cents, change_cents,
+            subtotal_cents, discount_cents, data.request_id, created_at_str
+        ))
+        sale_id = s_cur.lastrowid
+
+        if prod_id:
+            db.execute("""
+                INSERT INTO sale_items (
+                    sale_id, product_id, item_name, category, unit_price_cents,
+                    quantity, line_amount_cents, discount_cents
+                ) VALUES (?, ?, ?, ?, ?, 1, ?, 0)
+            """, (sale_id, prod_id, data.plan, prod_cat, price_cents, price_cents))
 
         cursor = db.execute(
             """INSERT INTO memberships
-               (customer_id, plan, start_date, end_date)
-               VALUES (?, ?, ?, ?)""",
+               (customer_id, plan, start_date, end_date, sale_id, amount_cents, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (data.customer_id, data.plan,
-             data.start_date.isoformat(), data.end_date.isoformat())
+             data.start_date.isoformat(), data.end_date.isoformat(),
+             sale_id, total_cents, created_at_str)
         )
         membership_id = cursor.lastrowid
 
-        payment_id = None
-        if data.method:
-            method = "Cash" if data.method.lower().startswith("c") else "E-Wallet"
-            price_cents = 120000 if data.plan in ("Monthly session", "Member session, monthly") else 30000
-            p_cur = db.execute(
-                """INSERT INTO payments
-                   (customer_id, description, amount_cents, method)
-                   VALUES (?, ?, ?, ?)""",
-                (data.customer_id, f"Plan: {data.plan}", price_cents, method)
-            )
-            payment_id = p_cur.lastrowid
+        p_cur = db.execute(
+            """INSERT INTO payments
+               (customer_id, description, amount_cents, method, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (data.customer_id, f"Plan: {data.plan}", price_cents, method, created_at_str)
+        )
+        payment_id = p_cur.lastrowid
 
+        sale_res = get_sale_formatted(db, sale_id)
         return {
             "id": membership_id,
+            "sale_id": sale_id,
             "payment_id": payment_id,
+            "sale": sale_res,
             **data.model_dump(mode="json")
         }
 
@@ -374,21 +780,38 @@ def renew_membership_record(data: Membership):
         raise HTTPException(422, "End date must not precede start date")
 
     with connect() as db:
-        require_record(db, "customers", data.customer_id)
-        today_str = date.today().isoformat()
+        if data.request_id:
+            existing_sale = db.execute("SELECT id FROM sales WHERE request_id = ?", (data.request_id,)).fetchone()
+            if existing_sale:
+                mem = db.execute("SELECT * FROM memberships WHERE sale_id = ?", (existing_sale[0],)).fetchone()
+                if mem:
+                    sale_res = get_sale_formatted(db, existing_sale[0])
+                    return {"id": mem["id"], "sale_id": existing_sale[0], "sale": sale_res, **dict(mem)}
+
+        cust = require_record(db, "customers", data.customer_id)
+        customer_name = f"{cust['first_name']} {cust['last_name']}".strip()
+        today_str = ph_today().isoformat()
 
         mems = rows(db.execute(
             """SELECT id, plan, start_date, end_date
                FROM memberships
-               WHERE customer_id = ?
+               WHERE customer_id = ? AND cancelled_at IS NULL
                ORDER BY start_date ASC, id ASC""",
             (data.customer_id,)
         ))
 
         if data.plan in ("Monthly session", "Member session, monthly"):
             plan_mems = [m for m in mems if m["plan"] in ("Monthly session", "Member session, monthly")]
+            prod = db.execute("SELECT id, price_cents FROM products WHERE name IN ('Monthly session', 'Member session, monthly')").fetchone()
+            price_cents = prod["price_cents"] if prod else 120000
+            prod_id = prod["id"] if prod else None
+            prod_cat = "Gym Access"
         else:
             plan_mems = [m for m in mems if m["plan"] == data.plan]
+            prod = db.execute("SELECT id, price_cents FROM products WHERE name = 'Yearly membership'").fetchone()
+            price_cents = prod["price_cents"] if prod else 30000
+            prod_id = prod["id"] if prod else None
+            prod_cat = "Membership"
 
         if not plan_mems:
             raise HTTPException(409, f"Customer has never had a {data.plan}. Use register instead.")
@@ -397,30 +820,75 @@ def renew_membership_record(data: Membership):
         if has_waiting:
             raise HTTPException(409, f"Customer already has a waiting renewal for {data.plan}.")
 
+        total_cents = price_cents
+        subtotal_cents = price_cents
+        discount_cents = 0
+
+        method = "Cash"
+        if data.method:
+            method = "Cash" if data.method.lower().startswith("c") else "E-Wallet"
+
+        if data.amount_tendered is not None:
+            tendered_cents = cents(data.amount_tendered)
+        else:
+            tendered_cents = total_cents
+
+        if method == "Cash":
+            if tendered_cents < total_cents:
+                raise HTTPException(422, "Amount is less than the total due")
+            change_cents = tendered_cents - total_cents
+        else:
+            tendered_cents = total_cents
+            change_cents = 0
+
+        created_at_str = ph_now().strftime("%Y-%m-%d %H:%M:%S")
+        receipt_no = next_receipt_no(db)
+
+        s_cur = db.execute("""
+            INSERT INTO sales (
+                receipt_no, customer_id, customer_name, customer_type, total_cents,
+                payment_method, amount_tendered_cents, change_cents, status,
+                subtotal_cents, discount_cents, membership_status, request_id, kind, created_at
+            ) VALUES (?, ?, ?, 'Member', ?, ?, ?, ?, 'Completed', ?, ?, 'Active', ?, 'membership', ?)
+        """, (
+            receipt_no, data.customer_id, customer_name,
+            total_cents, method, tendered_cents, change_cents,
+            subtotal_cents, discount_cents, data.request_id, created_at_str
+        ))
+        sale_id = s_cur.lastrowid
+
+        if prod_id:
+            db.execute("""
+                INSERT INTO sale_items (
+                    sale_id, product_id, item_name, category, unit_price_cents,
+                    quantity, line_amount_cents, discount_cents
+                ) VALUES (?, ?, ?, ?, ?, 1, ?, 0)
+            """, (sale_id, prod_id, data.plan, prod_cat, price_cents, price_cents))
+
         cursor = db.execute(
             """INSERT INTO memberships
-               (customer_id, plan, start_date, end_date)
-               VALUES (?, ?, ?, ?)""",
+               (customer_id, plan, start_date, end_date, sale_id, amount_cents, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (data.customer_id, data.plan,
-             data.start_date.isoformat(), data.end_date.isoformat())
+             data.start_date.isoformat(), data.end_date.isoformat(),
+             sale_id, total_cents, created_at_str)
         )
         membership_id = cursor.lastrowid
 
-        payment_id = None
-        if data.method:
-            method = "Cash" if data.method.lower().startswith("c") else "E-Wallet"
-            price_cents = 120000 if data.plan in ("Monthly session", "Member session, monthly") else 30000
-            p_cur = db.execute(
-                """INSERT INTO payments
-                   (customer_id, description, amount_cents, method)
-                   VALUES (?, ?, ?, ?)""",
-                (data.customer_id, f"Plan Renewal: {data.plan}", price_cents, method)
-            )
-            payment_id = p_cur.lastrowid
+        p_cur = db.execute(
+            """INSERT INTO payments
+               (customer_id, description, amount_cents, method, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (data.customer_id, f"Plan Renewal: {data.plan}", price_cents, method, created_at_str)
+        )
+        payment_id = p_cur.lastrowid
 
+        sale_res = get_sale_formatted(db, sale_id)
         return {
             "id": membership_id,
+            "sale_id": sale_id,
             "payment_id": payment_id,
+            "sale": sale_res,
             **data.model_dump(mode="json")
         }
 
@@ -431,7 +899,7 @@ def list_memberships(status: str = "all", plan: str = ""):
     if status not in ("all", "active", "expired", "upcoming"):
         raise HTTPException(422, "Invalid membership status")
 
-    today = date.today().isoformat()
+    today = ph_today().isoformat()
 
     with connect() as db:
         if plan:
@@ -716,56 +1184,81 @@ def create_purchase(data: Purchase):
         }
 
 
+def next_receipt_no(db):
+    last_id = db.execute("SELECT COALESCE(MAX(id), 0) FROM sales").fetchone()[0]
+    return f"R-{last_id + 1:06d}"
+
+
+def get_sale_formatted(db, sale_id: int):
+    sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
+    if not sale:
+        raise HTTPException(404, f"There is no sale record with ID {sale_id} right now.")
+    sale = dict(sale)
+    items = rows(db.execute("SELECT * FROM sale_items WHERE sale_id=?", (sale_id,)))
+    sale["total"] = money(sale.pop("total_cents"))
+    sale["amount_tendered"] = money(sale.pop("amount_tendered_cents"))
+    sale["change"] = money(sale.pop("change_cents"))
+    sale["subtotal"] = money(sale.pop("subtotal_cents") if sale.get("subtotal_cents") is not None else 0)
+    sale["discount"] = money(sale.pop("discount_cents") if sale.get("discount_cents") is not None else 0)
+    for it in items:
+        it["unit_price"] = money(it.pop("unit_price_cents"))
+        it["line_amount"] = money(it.pop("line_amount_cents"))
+        it["discount"] = money(it.pop("discount_cents") if it.get("discount_cents") is not None else 0)
+    sale["items"] = items
+    ts_row = db.execute("SELECT trainer_name, session_date_time FROM trainer_sessions WHERE sale_id=?", (sale_id,)).fetchone()
+    if ts_row:
+        sale["trainer_name"] = ts_row["trainer_name"]
+        sale["session_date_time"] = ts_row["session_date_time"]
+    return sale
+
+
 # SALES
 
-@app.post("/sales", status_code=201)
-def create_sale(data: SaleCreate):
-    today = date.today().isoformat()
+@app.post("/quotes")
+def quote_sale(data: QuoteRequest):
     with connect() as db:
-        customer_id = data.customer_id
-        if customer_id is not None:
-            cust = db.execute("SELECT * FROM customers WHERE id=?", (customer_id,)).fetchone()
-            if not cust:
-                raise HTTPException(404, f"Customer with ID {customer_id} was not found.")
-            mems = rows(db.execute("SELECT * FROM memberships WHERE customer_id=? ORDER BY end_date ASC", (customer_id,)))
-            y_status, _, _ = compute_customer_plan_status(mems, "Yearly membership", today)
-            customer_type = "Member" if y_status == "Active" else "Non-member"
-            customer_name = f"{cust['first_name']} {cust['last_name']}"
-        else:
-            customer_type = "Non-member"
-            customer_name = "Walk-in"
+        calc = calculate_discounts(db, data.customer_id, data.items)
+        return {
+            "customer_id": data.customer_id,
+            "customer_name": calc["customer_name"],
+            "membership_status": calc["membership_status"],
+            "has_gym_access": calc["mem_sum"]["has_gym_access"],
+            "qualifying_types": calc["mem_sum"]["qualifying_types"],
+            "items": calc["items"],
+            "subtotal": money(calc["subtotal_cents"]),
+            "subtotal_cents": calc["subtotal_cents"],
+            "discount": money(calc["discount_cents"]),
+            "discount_cents": calc["discount_cents"],
+            "total": money(calc["total_cents"]),
+            "total_cents": calc["total_cents"],
+        }
 
-        if not data.items:
-            raise HTTPException(422, "Add at least one item first")
 
-        total_cents = 0
-        resolved_items = []
-        for it in data.items:
-            prod = db.execute("SELECT * FROM products WHERE id=?", (it.product_id,)).fetchone()
-            if not prod or prod["is_active"] != 1:
-                raise HTTPException(422, "Item not available for this customer")
+@app.post("/daily-sessions", status_code=201)
+def create_daily_session(data: DailySessionCreate):
+    with connect() as db:
+        if data.request_id:
+            existing = db.execute("SELECT id FROM sales WHERE request_id = ?", (data.request_id,)).fetchone()
+            if existing:
+                res = get_sale_formatted(db, existing[0])
+                res["checked_in"] = True
+                return res
 
-            if prod["category"] == "Membership" or prod["name"] in ("Yearly membership", "Monthly session"):
-                raise HTTPException(422, "Item not available for this customer")
+        prod = db.execute(
+            "SELECT id, name, category, price_cents, is_active FROM products WHERE name = ? AND is_active = 1",
+            (DAILY_PRODUCT_NAME,)
+        ).fetchone()
+        if not prod:
+            prod = db.execute(
+                "SELECT id, name, category, price_cents, is_active FROM products WHERE category = 'Gym Access' AND is_active = 1 ORDER BY id DESC"
+            ).fetchone()
+        if not prod:
+            raise HTTPException(500, "Daily session product not found in catalog")
 
-            if prod["applies_to"] == "Members only" and customer_type != "Member":
-                raise HTTPException(422, "Item not available for this customer")
-            if prod["applies_to"] == "Non-members only" and customer_type == "Member":
-                raise HTTPException(422, "Item not available for this customer")
-
-            if it.quantity < 1 or it.quantity > 99:
-                raise HTTPException(422, "Enter a quantity from 1 to 99")
-
-            line_amount = prod["price_cents"] * it.quantity
-            total_cents += line_amount
-            resolved_items.append({
-                "product_id": prod["id"],
-                "item_name": prod["name"],
-                "category": prod["category"],
-                "unit_price_cents": prod["price_cents"],
-                "quantity": it.quantity,
-                "line_amount_cents": line_amount
-            })
+        calc = calculate_discounts(db, data.customer_id, [{"product_id": prod["id"], "quantity": 1}])
+        total_cents = calc["total_cents"]
+        subtotal_cents = calc["subtotal_cents"]
+        discount_cents = calc["discount_cents"]
 
         tendered_cents = cents(data.amount_tendered)
         if data.payment_method == "Cash":
@@ -776,33 +1269,98 @@ def create_sale(data: SaleCreate):
             tendered_cents = total_cents
             change_cents = 0
 
-        last_id = db.execute("SELECT COALESCE(MAX(id), 0) FROM sales").fetchone()[0]
-        receipt_no = f"R-{last_id + 1:06d}"
+        receipt_no = next_receipt_no(db)
+        customer_type = "Member" if calc["membership_status"] == "Active" else "Non-member"
+        created_at_str = ph_now().strftime("%Y-%m-%d %H:%M:%S")
 
         cur = db.execute("""
-            INSERT INTO sales (receipt_no, customer_id, customer_name, customer_type, total_cents,
-                               payment_method, amount_tendered_cents, change_cents, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Completed')
-        """, (receipt_no, customer_id, customer_name, customer_type, total_cents,
-              data.payment_method, tendered_cents, change_cents))
+            INSERT INTO sales (
+                receipt_no, customer_id, customer_name, customer_type, total_cents,
+                payment_method, amount_tendered_cents, change_cents, status,
+                subtotal_cents, discount_cents, membership_status, request_id, kind, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Completed', ?, ?, ?, ?, 'daily_session', ?)
+        """, (
+            receipt_no, data.customer_id, calc["customer_name"], customer_type,
+            total_cents, data.payment_method, tendered_cents, change_cents,
+            subtotal_cents, discount_cents, calc["membership_status"], data.request_id, created_at_str
+        ))
         sale_id = cur.lastrowid
 
-        for it in resolved_items:
+        for it in calc["items"]:
             db.execute("""
-                INSERT INTO sale_items (sale_id, product_id, item_name, category, unit_price_cents, quantity, line_amount_cents)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (sale_id, it["product_id"], it["item_name"], it["category"], it["unit_price_cents"], it["quantity"], it["line_amount_cents"]))
+                INSERT INTO sale_items (
+                    sale_id, product_id, item_name, category, unit_price_cents,
+                    quantity, line_amount_cents, discount_cents
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                sale_id, it["product_id"], it["item_name"], it["category"],
+                it["unit_price_cents"], it["quantity"], it["total_cents"], it["discount_cents"]
+            ))
 
-        sale = dict(db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone())
-        items = rows(db.execute("SELECT * FROM sale_items WHERE sale_id=?", (sale_id,)))
-        sale["total"] = money(sale.pop("total_cents"))
-        sale["amount_tendered"] = money(sale.pop("amount_tendered_cents"))
-        sale["change"] = money(sale.pop("change_cents"))
-        for it in items:
-            it["unit_price"] = money(it.pop("unit_price_cents"))
-            it["line_amount"] = money(it.pop("line_amount_cents"))
-        sale["items"] = items
-        return sale
+        db.execute("""
+            INSERT INTO visits (customer_id, check_in_at, used, sale_id)
+            VALUES (?, ?, 1, ?)
+        """, (data.customer_id, created_at_str, sale_id))
+
+        res = get_sale_formatted(db, sale_id)
+        res["checked_in"] = True
+        return res
+
+
+@app.post("/sales", status_code=201)
+def create_sale(data: SaleCreate):
+    with connect() as db:
+        if data.request_id:
+            existing = db.execute("SELECT id FROM sales WHERE request_id = ?", (data.request_id,)).fetchone()
+            if existing:
+                return get_sale_formatted(db, existing[0])
+
+        if not data.items:
+            raise HTTPException(422, "Add at least one item first")
+
+        calc = calculate_discounts(db, data.customer_id, data.items)
+        total_cents = calc["total_cents"]
+        subtotal_cents = calc["subtotal_cents"]
+        discount_cents = calc["discount_cents"]
+
+        tendered_cents = cents(data.amount_tendered)
+        if data.payment_method == "Cash":
+            if tendered_cents < total_cents:
+                raise HTTPException(422, "Amount is less than the total due")
+            change_cents = tendered_cents - total_cents
+        else:
+            tendered_cents = total_cents
+            change_cents = 0
+
+        receipt_no = next_receipt_no(db)
+        customer_type = "Member" if calc["membership_status"] == "Active" else "Non-member"
+        created_at_str = ph_now().strftime("%Y-%m-%d %H:%M:%S")
+
+        cur = db.execute("""
+            INSERT INTO sales (
+                receipt_no, customer_id, customer_name, customer_type, total_cents,
+                payment_method, amount_tendered_cents, change_cents, status,
+                subtotal_cents, discount_cents, membership_status, request_id, kind, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Completed', ?, ?, ?, ?, 'product', ?)
+        """, (
+            receipt_no, data.customer_id, calc["customer_name"], customer_type,
+            total_cents, data.payment_method, tendered_cents, change_cents,
+            subtotal_cents, discount_cents, calc["membership_status"], data.request_id, created_at_str
+        ))
+        sale_id = cur.lastrowid
+
+        for it in calc["items"]:
+            db.execute("""
+                INSERT INTO sale_items (
+                    sale_id, product_id, item_name, category, unit_price_cents,
+                    quantity, line_amount_cents, discount_cents
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                sale_id, it["product_id"], it["item_name"], it["category"],
+                it["unit_price_cents"], it["quantity"], it["total_cents"], it["discount_cents"]
+            ))
+
+        return get_sale_formatted(db, sale_id)
 
 
 @app.get("/sales")
@@ -834,9 +1392,12 @@ def list_sales(search: str = "", status: str = "", date: str = ""):
             sale["total"] = money(sale.pop("total_cents"))
             sale["amount_tendered"] = money(sale.pop("amount_tendered_cents"))
             sale["change"] = money(sale.pop("change_cents"))
+            sale["subtotal"] = money(sale.pop("subtotal_cents") if sale.get("subtotal_cents") is not None else 0)
+            sale["discount"] = money(sale.pop("discount_cents") if sale.get("discount_cents") is not None else 0)
             for it in items:
                 it["unit_price"] = money(it.pop("unit_price_cents"))
                 it["line_amount"] = money(it.pop("line_amount_cents"))
+                it["discount"] = money(it.pop("discount_cents") if it.get("discount_cents") is not None else 0)
             sale["items"] = items
         return records
 
@@ -844,23 +1405,7 @@ def list_sales(search: str = "", status: str = "", date: str = ""):
 @app.get("/sales/{sale_id}")
 def get_sale(sale_id: int):
     with connect() as db:
-        sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
-        if not sale:
-            raise HTTPException(404, f"There is no sale record with ID {sale_id} right now.")
-        sale = dict(sale)
-        items = rows(db.execute("SELECT * FROM sale_items WHERE sale_id=?", (sale_id,)))
-        sale["total"] = money(sale.pop("total_cents"))
-        sale["amount_tendered"] = money(sale.pop("amount_tendered_cents"))
-        sale["change"] = money(sale.pop("change_cents"))
-        for it in items:
-            it["unit_price"] = money(it.pop("unit_price_cents"))
-            it["line_amount"] = money(it.pop("line_amount_cents"))
-        sale["items"] = items
-        ts_row = db.execute("SELECT trainer_name, session_date_time FROM trainer_sessions WHERE sale_id=?", (sale_id,)).fetchone()
-        if ts_row:
-            sale["trainer_name"] = ts_row["trainer_name"]
-            sale["session_date_time"] = ts_row["session_date_time"]
-        return sale
+        return get_sale_formatted(db, sale_id)
 
 
 @app.post("/sales/{sale_id}/void")
@@ -908,7 +1453,7 @@ def list_trainers(status: str = "Active"):
 def customer_trainer_sessions_count(customer_id: int):
     with connect() as db:
         require_record(db, "customers", customer_id)
-        current_month = date.today().strftime("%Y-%m")
+        current_month = ph_today().strftime("%Y-%m")
         count = db.execute("""
             SELECT COUNT(*) FROM trainer_sessions ts
             JOIN sales s ON s.id = ts.sale_id
@@ -921,8 +1466,8 @@ def customer_trainer_sessions_count(customer_id: int):
 
 @app.post("/trainer-sessions", status_code=201)
 def create_trainer_session(data: TrainerSessionCreate):
-    today_str = date.today().isoformat()
-    now_dt = datetime.now()
+    today_str = ph_today().isoformat()
+    now_dt = ph_now()
 
     if data.session_datetime:
         dt_str = data.session_datetime.strip()
@@ -942,6 +1487,11 @@ def create_trainer_session(data: TrainerSessionCreate):
         formatted_session_dt = now_dt.strftime("%Y-%m-%d %H:%M")
 
     with connect() as db:
+        if data.request_id:
+            existing = db.execute("SELECT id FROM sales WHERE request_id = ?", (data.request_id,)).fetchone()
+            if existing:
+                return get_sale_formatted(db, existing[0])
+
         trainer = db.execute("SELECT * FROM trainers WHERE id=? AND status='Active'", (data.trainer_id,)).fetchone()
         if not trainer:
             raise HTTPException(422, "Invalid choice")
@@ -981,17 +1531,19 @@ def create_trainer_session(data: TrainerSessionCreate):
         last_id = db.execute("SELECT COALESCE(MAX(id), 0) FROM sales").fetchone()[0]
         receipt_no = f"R-{last_id + 1:06d}"
 
+        created_at_str = ph_now().strftime("%Y-%m-%d %H:%M:%S")
         cur = db.execute("""
             INSERT INTO sales (receipt_no, customer_id, customer_name, customer_type, total_cents,
-                               payment_method, amount_tendered_cents, change_cents, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Completed')
+                               payment_method, amount_tendered_cents, change_cents, status,
+                               subtotal_cents, discount_cents, membership_status, request_id, kind, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Completed', ?, 0, ?, ?, 'trainer', ?)
         """, (receipt_no, data.customer_id, customer_name, customer_type, price_cents,
-              data.payment_method, tendered_cents, change_cents))
+              data.payment_method, tendered_cents, change_cents, price_cents, customer_type, data.request_id, created_at_str))
         sale_id = cur.lastrowid
 
         db.execute("""
-            INSERT INTO sale_items (sale_id, product_id, item_name, category, unit_price_cents, quantity, line_amount_cents)
-            VALUES (?, ?, ?, 'Coaching', ?, 1, ?)
+            INSERT INTO sale_items (sale_id, product_id, item_name, category, unit_price_cents, quantity, line_amount_cents, discount_cents)
+            VALUES (?, ?, ?, 'Coaching', ?, 1, ?, 0)
         """, (sale_id, prod["id"], prod["name"], price_cents, price_cents))
 
         cur_ts = db.execute("""
@@ -1004,7 +1556,7 @@ def create_trainer_session(data: TrainerSessionCreate):
             "session_id": ts_id,
             "sale_id": sale_id,
             "receipt_no": receipt_no,
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "created_at": ph_now().strftime("%Y-%m-%d %H:%M"),
             "customer_id": data.customer_id,
             "customer_name": customer_name,
             "customer_type": customer_type,

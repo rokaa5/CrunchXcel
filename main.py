@@ -4,10 +4,11 @@ import re
 import sys
 import textwrap
 import unicodedata
+import uuid
 import requests
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from models import CATEGORY_TO_TYPE, PRODUCT_CATEGORIES, clean_phone
+from models import CATEGORY_TO_TYPE, PRODUCT_CATEGORIES, clean_phone, ph_now, ph_today
 
 API = "http://127.0.0.1:8000"
 PAGE_SIZE = 10
@@ -480,6 +481,56 @@ def format_currency(value):
         return str(value)
 
 
+def confirm_purchase_screen(
+    customer_name: str,
+    membership_label: str,
+    items_count: int,
+    subtotal: str,
+    discount: str,
+    total: str,
+    payment_method: str,
+    tendered: str,
+    change: str,
+    width: int = 50,
+) -> bool:
+    header("CONFIRM PURCHASE", input_screen=False, width=width)
+    print(f"{'Customer:':<18}{customer_name}")
+    print(f"{'Membership:':<18}{membership_label}")
+    print(f"{'Items:':<18}{items_count}")
+    print(f"{'Subtotal:':<18}{format_currency(subtotal)}")
+    print(f"{'Discount:':<18}{format_currency(discount)}")
+    print(f"{'Total Due:':<18}{format_currency(total)}")
+    print(f"{'Payment Method:':<18}{payment_method}")
+    print(f"{'Amount Tendered:':<18}{format_currency(tendered)}")
+    print(f"{'Change:':<18}{format_currency(change)}")
+    print("-" * width)
+    choice = input("Save this purchase? (Y/N): ").strip().upper()
+    return choice == "Y"
+
+
+def print_receipt(sale, width=58):
+    header("RECEIPT", input_screen=False, width=width)
+    print(f"Receipt no.: {sale.get('receipt_no', '-')}")
+    print(f"Date:        {sale.get('created_at', '-')}")
+    print(f"Customer:    {sale.get('customer_name', 'Walk-in')}")
+    print("-" * width)
+    for it in sale.get("items", []):
+        disc_val = Decimal(str(it.get("discount", 0)))
+        disc_str = f" (-{format_currency(it['discount'])})" if disc_val > 0 else ""
+        line = f"{it['item_name'][:24]:<24} {it['quantity']} x {format_currency(it['unit_price']):>7}{disc_str}  {format_currency(it['line_amount']):>8}"
+        print(line)
+    print("-" * width)
+    disc_total = Decimal(str(sale.get("discount", 0)))
+    if disc_total > 0:
+        print(f"{'Subtotal':<44} {format_currency(sale.get('subtotal', sale['total'])):>12}")
+        print(f"{'Discount':<44} -{format_currency(sale['discount']):>11}")
+    print(f"{'Total':<44} {format_currency(sale['total']):>12}")
+    print(f"Payment:     {sale.get('payment_method', '-')}")
+    print(f"{'Tendered':<44} {format_currency(sale.get('amount_tendered', sale['total'])):>12}")
+    print(f"{'Change':<44} {format_currency(sale.get('change', '0.00')):>12}")
+    print("-" * width)
+
+
 def wrap_cell(value, width):
     text = re.sub(r"\s+", " ", str(value).strip()) if value is not None else ""
     if not text:
@@ -930,21 +981,195 @@ def customer_management():
 # MEMBERSHIP MANAGEMENT
 
 def customer_overview():
-    width = 67
-    columns = [
-        ("ID", "id", 4),
-        ("Customer", lambda c: f"{c.get('first_name', '')} {c.get('last_name', '')}".strip(), 18),
-        ("Yearly Membership", lambda c: c.get("membership") or "-", 19),
-        ("Monthly Session", lambda c: c.get("subscription") or "-", 17),
-    ]
-    paginated_view(
-        "CUSTOMER OVERVIEW",
-        lambda: request("GET", "/customers"),
-        columns,
-        empty_message="No customers found.",
-        sort_key="id",
-        width=width
-    )
+    page = 1
+    page_size = 10
+    search_query = ""
+
+    while True:
+        params = {}
+        if search_query:
+            params["search"] = search_query
+        customers = request("GET", "/customers", params=params) or []
+
+        total_pages = max(1, (len(customers) + page_size - 1) // page_size)
+        page = max(1, min(page, total_pages))
+        start_idx = (page - 1) * page_size
+        page_customers = customers[start_idx:start_idx + page_size]
+
+        width = 68
+        header("CUSTOMER OVERVIEW", input_screen=False, width=width)
+        if search_query:
+            print(f"Filter: '{search_query}' (Enter empty search to reset)")
+        print(f"{'ID':<4} | {'Customer':<20} | {'Yearly':<11} | {'Monthly':<11} | {'Last Visit':<10}")
+        print("-" * width)
+        if not page_customers:
+            print("No customers found.")
+        else:
+            for c in page_customers:
+                cname = f"{c.get('first_name', '')} {c.get('last_name', '')}".strip()[:20]
+                ystatus = c.get("yearly_status") or "-"
+                mstatus = c.get("monthly_status") or "-"
+                lvisit = c.get("last_visit") or "-"
+                print(f"{c['id']:<4} | {cname:<20} | {ystatus:<11} | {mstatus:<11} | {lvisit:<10}")
+
+        print("-" * width)
+        nav = [f"Page {page} of {total_pages}"]
+        if page < total_pages:
+            nav.append("[N] Next")
+        if page > 1:
+            nav.append("[P] Prev")
+        nav.append("[S] Search")
+        nav.append("[0] Back")
+        print(" | ".join(nav))
+        print("-" * width)
+        val = input("Enter Customer ID to view details (or choice): ").strip()
+        low = val.lower()
+
+        if low in ("0", "b", "back"):
+            return
+        if low in ("n", "next") and page < total_pages:
+            page += 1
+            continue
+        if low in ("p", "prev", "previous") and page > 1:
+            page -= 1
+            continue
+        if low in ("s", "search"):
+            search_query = input("Search by ID, name, or phone [Enter to clear]: ").strip()
+            page = 1
+            continue
+
+        if val.isdigit():
+            target_id = int(val)
+            cust_check = request("GET", f"/customers/{target_id}", silent_404=True)
+            if cust_check:
+                customer_details_view(target_id)
+            else:
+                print(f"Customer with ID {target_id} was not found.")
+                pause()
+        else:
+            if val:
+                search_query = val
+                page = 1
+
+
+def customer_details_view(customer_id):
+    while True:
+        ov = request("GET", f"/customers/{customer_id}/overview")
+        if not ov:
+            print(f"Customer with ID {customer_id} not found.")
+            pause()
+            return
+
+        width = 60
+        header("CUSTOMER DETAILS", input_screen=False, width=width)
+        print(f"{'Customer ID:':<24}{ov['id']}")
+        print(f"{'Name:':<24}{ov['name']}")
+        print(f"{'Phone:':<24}{mask_phone(ov['phone'])}")
+
+        y_exp = f"{ov['yearly_end_date']} ({ov['yearly_label']})" if ov.get("yearly_end_date") else ov["yearly_label"]
+        print(f"{'Yearly Expiration:':<24}{y_exp}")
+
+        m_exp = f"{ov['monthly_end_date']} ({ov['monthly_label']})" if ov.get("monthly_end_date") else ov["monthly_label"]
+        print(f"{'Monthly Expiration:':<24}{m_exp}")
+
+        print(f"{'Daily Access:':<24}{ov['daily_access']}")
+        print(f"{'Discount Eligibility:':<24}{ov['discount_eligibility']}")
+        print(f"{'Total Purchases:':<24}{ov['total_purchases']}")
+        print(f"{'Lifetime Spending:':<24}{format_currency(ov['lifetime_spending'])}")
+        print(f"{'Total Visits:':<24}{ov['total_visits']}")
+        print(f"{'Last Visit:':<24}{ov['last_visit'] or 'None'}")
+        print("-" * width)
+        print("[1] Membership History")
+        print("[2] Purchase History")
+        print("[3] Visit History")
+        print("-" * width)
+        print("[0] Back")
+        print("-" * width)
+        choice = input("Choice: ").strip()
+
+        if choice in ("0", "b", "back"):
+            return
+        elif choice == "1":
+            view_customer_membership_history(customer_id, ov["name"])
+        elif choice == "2":
+            view_customer_purchase_history(customer_id, ov["name"])
+        elif choice == "3":
+            view_customer_visit_history(customer_id, ov["name"])
+        else:
+            print("Invalid choice.")
+            pause()
+
+
+def view_customer_membership_history(customer_id, customer_name):
+    mems = request("GET", f"/customers/{customer_id}/memberships") or []
+    width = 70
+    header("MEMBERSHIP HISTORY", input_screen=False, width=width)
+    print(f"Customer: {customer_name}")
+    print("-" * width)
+    if not mems:
+        print("No membership history found.")
+    else:
+        print(f"{'ID':<4} | {'Plan':<18} | {'Start':<10} | {'End':<10} | {'Status':<11} | {'Receipt':<8}")
+        print("-" * width)
+        for m in mems:
+            rc = m.get("receipt_no") or "-"
+            print(f"{m['id']:<4} | {m['plan'][:18]:<18} | {m['start_date']:<10} | {m['end_date']:<10} | {m['status']:<11} | {rc:<8}")
+    print("-" * width)
+    pause()
+
+
+def view_customer_purchase_history(customer_id, customer_name):
+    while True:
+        sales = request("GET", f"/customers/{customer_id}/sales") or []
+        width = 68
+        header("PURCHASE HISTORY", input_screen=False, width=width)
+        print(f"Customer: {customer_name}")
+        print("-" * width)
+        if not sales:
+            print("No purchase history found.")
+            print("-" * width)
+            pause()
+            return
+        print(f"{'Receipt No':<10} | {'Date':<10} | {'Items':<5} | {'Total':>9} | {'Status':<9}")
+        print("-" * width)
+        for s in sales:
+            dt_str = s.get("created_at", "")[:10]
+            items_cnt = len(s.get("items", []))
+            print(f"{s['receipt_no']:<10} | {dt_str:<10} | {items_cnt:<5} | {format_currency(s['total']):>9} | {s['status']:<9}")
+        print("-" * width)
+        print("Enter Receipt No / ID to view receipt, or [0] Back.")
+        choice = input("Choice: ").strip()
+        if choice in ("0", "b", "back", ""):
+            return
+        matched = None
+        for s in sales:
+            if choice.lower() == s["receipt_no"].lower() or (choice.isdigit() and int(choice) == s["id"]):
+                matched = s
+                break
+        if matched:
+            print_receipt(matched)
+            pause()
+        else:
+            print("Receipt not found.")
+            pause()
+
+
+def view_customer_visit_history(customer_id, customer_name):
+    visits = request("GET", f"/customers/{customer_id}/visits") or []
+    width = 58
+    header("VISIT HISTORY", input_screen=False, width=width)
+    print(f"Customer: {customer_name}")
+    print("-" * width)
+    if not visits:
+        print("No visit history found.")
+    else:
+        print(f"{'ID':<6} | {'Check-in Time':<20} | {'Receipt':<10}")
+        print("-" * width)
+        for v in visits:
+            rc = v.get("receipt_no") or "-"
+            print(f"{v['id']:<6} | {v['check_in_at']:<20} | {rc:<10}")
+    print("-" * width)
+    pause()
 
 
 def view_plan_memberships(plan_name, status="all"):
@@ -1036,7 +1261,7 @@ def register_plan(plan_name):
         if not customer:
             break
 
-        start = date.today()
+        start = ph_today()
         end = term_calc(start)
         full_name = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
 
@@ -1052,11 +1277,47 @@ def register_plan(plan_name):
             banner = "Cancelled. Nothing was saved."
             continue
 
-        print(f"\nPayment Method: {method}")
-        if not confirm("Register membership and record payment? (y/n, 0 to cancel): "):
+        fee_dec = Decimal(fee_str.replace(",", ""))
+        if method == "Cash":
+            cancelled_tender = False
+            while True:
+                t_input = input(f"Amount tendered [0 to cancel]: ").strip()
+                if t_input in ("0", "cancel", "b", "back"):
+                    cancelled_tender = True
+                    break
+                try:
+                    tendered_dec = Decimal(t_input)
+                    if tendered_dec < fee_dec:
+                        print("Amount is less than the total due")
+                        continue
+                    break
+                except Exception:
+                    print("Enter a valid amount")
+            if cancelled_tender:
+                banner = "Cancelled. Nothing was saved."
+                continue
+            tendered_str = f"{tendered_dec:.2f}"
+            change_str = f"{tendered_dec - fee_dec:.2f}"
+        else:
+            tendered_str = f"{fee_dec:.2f}"
+            change_str = "0.00"
+
+        confirmed = confirm_purchase_screen(
+            customer_name=full_name,
+            membership_label="Active",
+            items_count=1,
+            subtotal=fee_str,
+            discount="0.00",
+            total=fee_str,
+            payment_method=method,
+            tendered=tendered_str,
+            change=change_str,
+        )
+        if not confirmed:
             banner = "Cancelled. Nothing was saved."
             continue
 
+        req_id = str(uuid.uuid4())
         result = request(
             "POST",
             "/memberships",
@@ -1065,13 +1326,18 @@ def register_plan(plan_name):
                 "plan": plan_name,
                 "start_date": str(start),
                 "end_date": str(end),
-                "method": method
+                "method": method,
+                "amount_tendered": tendered_str,
+                "request_id": req_id
             }
         )
 
         if result:
-            print("\nMembership registered and payment recorded successfully!")
-            show(result)
+            print("\nMembership registered successfully!")
+            if "sale" in result:
+                print_receipt(result["sale"])
+            else:
+                show(result)
             pause()
         else:
             pause()
@@ -1129,7 +1395,7 @@ def renew_plan(plan_name):
 
         current_end_str = customer.get(end_date_key)
         current_status = customer.get(status_key)
-        today = date.today()
+        today = ph_today()
 
         if current_status == "Active" and current_end_str:
             start = date.fromisoformat(current_end_str)
@@ -1154,11 +1420,47 @@ def renew_plan(plan_name):
             banner = "Cancelled. Nothing was saved."
             continue
 
-        print(f"\nPayment Method: {method}")
-        if not confirm("Renew membership and record payment? (y/n, 0 to cancel): "):
+        fee_dec = Decimal(fee_str.replace(",", ""))
+        if method == "Cash":
+            cancelled_tender = False
+            while True:
+                t_input = input(f"Amount tendered [0 to cancel]: ").strip()
+                if t_input in ("0", "cancel", "b", "back"):
+                    cancelled_tender = True
+                    break
+                try:
+                    tendered_dec = Decimal(t_input)
+                    if tendered_dec < fee_dec:
+                        print("Amount is less than the total due")
+                        continue
+                    break
+                except Exception:
+                    print("Enter a valid amount")
+            if cancelled_tender:
+                banner = "Cancelled. Nothing was saved."
+                continue
+            tendered_str = f"{tendered_dec:.2f}"
+            change_str = f"{tendered_dec - fee_dec:.2f}"
+        else:
+            tendered_str = f"{fee_dec:.2f}"
+            change_str = "0.00"
+
+        confirmed = confirm_purchase_screen(
+            customer_name=full_name,
+            membership_label="Active",
+            items_count=1,
+            subtotal=fee_str,
+            discount="0.00",
+            total=fee_str,
+            payment_method=method,
+            tendered=tendered_str,
+            change=change_str,
+        )
+        if not confirmed:
             banner = "Cancelled. Nothing was saved."
             continue
 
+        req_id = str(uuid.uuid4())
         result = request(
             "POST",
             "/memberships/renew",
@@ -1167,13 +1469,18 @@ def renew_plan(plan_name):
                 "plan": plan_name,
                 "start_date": str(start),
                 "end_date": str(end),
-                "method": method
+                "method": method,
+                "amount_tendered": tendered_str,
+                "request_id": req_id
             }
         )
 
         if result:
-            print("\nMembership renewed and payment recorded successfully!")
-            show(result)
+            print("\nMembership renewed successfully!")
+            if "sale" in result:
+                print_receipt(result["sale"])
+            else:
+                show(result)
             pause()
         else:
             pause()
@@ -1199,10 +1506,149 @@ def monthly_session_menu():
     ])
 
 
+def daily_session_flow():
+    while True:
+        header("DAILY SESSION", input_screen=False, width=58)
+        print("Identify customer by ID or press Enter for anonymous walk-in.")
+        print("[0] to cancel")
+        print("-" * 58)
+        cid_input = input("Customer ID [Enter for Walk-in]: ").strip()
+
+        if cid_input.lower() in ("0", "cancel", "b", "back"):
+            return
+
+        customer_id = None
+        customer_name = "Walk-in"
+        membership_label = "Not Registered"
+        has_access = False
+
+        if cid_input:
+            if not cid_input.isdigit():
+                print("Enter a numeric Customer ID or leave blank for walk-in.")
+                pause()
+                continue
+            cid = int(cid_input)
+            cust = request("GET", f"/customers/{cid}", silent_404=True)
+            if not cust:
+                print(f"Customer with ID {cid} was not found.")
+                pause()
+                continue
+            customer_id = cid
+            customer_name = f"{cust.get('first_name', '')} {cust.get('last_name', '')}".strip()
+            ov = request("GET", f"/customers/{cid}/overview")
+            if ov:
+                if ov.get("yearly_status") == "Active":
+                    membership_label = "Active (Yearly)"
+                elif ov.get("monthly_status") == "Active":
+                    membership_label = "Active (Monthly)"
+                else:
+                    membership_label = ov.get("yearly_label", "Not Registered")
+                has_access = ov.get("has_gym_access", False)
+
+            if has_access:
+                print("\n[!] WARNING: Customer already has an active Monthly session with valid gym access.")
+                cont = input("Continue selling daily session anyway? (y/n, 0 to cancel): ").strip().lower()
+                if cont not in ("y", "yes"):
+                    print("Transaction cancelled.")
+                    pause()
+                    return
+
+        # Fetch daily session quote
+        prod_quote = request("POST", "/quotes", {
+            "customer_id": customer_id,
+            "items": [{"product_id": 20, "quantity": 1}]
+        })
+        if not prod_quote:
+            print("Error retrieving product details.")
+            pause()
+            return
+
+        subtotal_str = prod_quote["subtotal"]
+        discount_str = prod_quote["discount"]
+        total_str = prod_quote["total"]
+        total_dec = Decimal(total_str)
+
+        header("PAYMENT", input_screen=False, width=58)
+        print(f"Customer:    {customer_name}")
+        print(f"Total due:   {format_currency(total_str)}")
+        print("-" * 58)
+        print("Payment method:")
+        print("[1] Cash")
+        print("[2] E-Wallet")
+        print("-" * 58)
+        print("[0] Cancel")
+        print("-" * 58)
+        pm_choice = input("Choice: ").strip()
+        if pm_choice in ("0", "cancel", "b", "back"):
+            return
+        if pm_choice == "1":
+            method = "Cash"
+            cancelled_tender = False
+            while True:
+                t_input = input(f"Amount tendered [0 to cancel]: ").strip()
+                if t_input in ("0", "cancel", "b", "back"):
+                    cancelled_tender = True
+                    break
+                try:
+                    tendered_dec = Decimal(t_input)
+                    if tendered_dec < total_dec:
+                        print("Amount is less than the total due")
+                        continue
+                    break
+                except Exception:
+                    print("Enter a valid amount")
+            if cancelled_tender:
+                continue
+            tendered_str = f"{tendered_dec:.2f}"
+            change_str = f"{tendered_dec - total_dec:.2f}"
+        elif pm_choice == "2":
+            method = "E-Wallet"
+            tendered_str = total_str
+            change_str = "0.00"
+        else:
+            print("Invalid payment method.")
+            pause()
+            continue
+
+        confirmed = confirm_purchase_screen(
+            customer_name=customer_name,
+            membership_label=membership_label,
+            items_count=1,
+            subtotal=subtotal_str,
+            discount=discount_str,
+            total=total_str,
+            payment_method=method,
+            tendered=tendered_str,
+            change=change_str,
+        )
+
+        if not confirmed:
+            print("\nTransaction cancelled. No changes made.")
+            pause()
+            return
+
+        req_id = str(uuid.uuid4())
+        res = request("POST", "/daily-sessions", {
+            "customer_id": customer_id,
+            "payment_method": method,
+            "amount_tendered": tendered_str,
+            "request_id": req_id
+        })
+        if res:
+            print("\nDaily session purchased and visit checked in successfully!")
+            print_receipt(res)
+            pause()
+            return
+        else:
+            pause()
+            return
+
+
 def product_service_management():
     submenu("PRODUCT/SERVICE MANAGEMENT", [
         ("Yearly Membership", yearly_membership_menu),
         ("Monthly Session", monthly_session_menu),
+        ("Daily Session", daily_session_flow),
         ("Services/Products", services_products_menu),
         ("Customer Overview", customer_overview),
     ])
@@ -1612,85 +2058,99 @@ def delete_product():
             pause()
 
 
-def record_purchase():
-    while True:
-        header("RECORD PURCHASE", input_screen=False, width=58)
-        print("[1] Existing customer")
-        print("[2] Walk-in customer")
+def record_purchase(customer=None):
+    if customer:
+        customer_id = customer["id"]
+        customer_name = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
+        ov = request("GET", f"/customers/{customer_id}/overview")
+        if ov:
+            if ov.get("yearly_status") == "Active":
+                membership_label = "Active (Yearly)"
+            elif ov.get("monthly_status") == "Active":
+                membership_label = "Active (Monthly)"
+            else:
+                membership_label = ov.get("yearly_label", "Not Registered")
+        else:
+            membership_label = "Not Registered"
+    else:
+        header("SERVICES/PRODUCTS", input_screen=False, width=58)
+        print("Identify customer by ID or press Enter for anonymous walk-in.")
+        print("[0] to cancel")
         print("-" * 58)
-        print("[0] Back")
-        print("-" * 58)
-        choice = input("Choice: ").strip()
-
-        if choice in ("0", "b", "back"):
+        cid_input = input("Customer ID [Enter for Walk-in]: ").strip()
+        if cid_input.lower() in ("0", "cancel", "b", "back"):
             return
 
-        if choice == "1":
-            cust_cols = [
-                ("ID", "id", 4),
-                ("Name", lambda c: f"{c.get('first_name', '')} {c.get('last_name', '')}".strip(), 20),
-                ("Membership", "membership", 12),
-                ("Subscription", "subscription", 14),
-            ]
-            try:
-                customer = select_customer_from_list(
-                    "SELECT CUSTOMER",
-                    "record a purchase",
-                    columns=cust_cols,
-                    width=58
-                )
-            except GoBack:
-                continue
+        customer_id = None
+        customer_name = "Walk-in"
+        membership_label = "Not Registered"
 
-            if not customer:
-                continue
+        if cid_input:
+            if not cid_input.isdigit():
+                print("Enter a numeric Customer ID or leave blank for walk-in.")
+                pause()
+                return
+            cid = int(cid_input)
+            cust = request("GET", f"/customers/{cid}", silent_404=True)
+            if not cust:
+                print(f"Customer with ID {cid} was not found.")
+                pause()
+                return
+            customer_id = cid
+            customer_name = f"{cust.get('first_name', '')} {cust.get('last_name', '')}".strip()
+            ov = request("GET", f"/customers/{cid}/overview")
+            if ov:
+                if ov.get("yearly_status") == "Active":
+                    membership_label = "Active (Yearly)"
+                elif ov.get("monthly_status") == "Active":
+                    membership_label = "Active (Monthly)"
+                else:
+                    membership_label = ov.get("yearly_label", "Not Registered")
 
-            customer_id = customer["id"]
-            customer_name = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
-            is_active_member = customer.get("yearly_status") == "Active"
-            customer_type = "Member" if is_active_member else "Non-member"
-            member_tag = "Active member" if is_active_member else "Non-member"
-
-        elif choice == "2":
-            customer_id = None
-            customer_name = "Walk-in"
-            customer_type = "Non-member"
-            member_tag = "Non-member"
-        else:
-            print("Invalid choice.")
-            pause()
-            continue
-
-        cart = []
-        manage_purchase_cart(customer_id, customer_name, customer_type, member_tag, cart)
+    cart = []
+    manage_purchase_cart(customer_id, customer_name, membership_label, cart)
 
 
-def manage_purchase_cart(customer_id, customer_name, customer_type, member_tag, cart):
+def manage_purchase_cart(customer_id, customer_name, membership_label, cart):
     if not cart:
-        pick_purchase_items(customer_id, customer_name, customer_type, member_tag, cart)
+        pick_purchase_items(customer_id, customer_name, membership_label, cart)
         if not cart:
             return
 
     while True:
-        header("PURCHASE CART", input_screen=False, width=60)
-        print(f"Customer: {customer_name} | {member_tag}")
-        print("-" * 60)
-        print(f"{'No':<3} | {'Item Name':<24} | {'Qty':>3} | {'Unit Price':>10} | {'Amount':>10}")
-        print("-" * 60)
+        quote_res = request("POST", "/quotes", {
+            "customer_id": customer_id,
+            "items": [{"product_id": it["product_id"], "quantity": it["quantity"]} for it in cart]
+        })
+        if not quote_res:
+            print("Error retrieving cart pricing.")
+            pause()
+            return
 
-        total = Decimal("0.00")
-        for idx, it in enumerate(cart, 1):
-            line_amount = it["price"] * it["quantity"]
-            total += line_amount
-            print(f"{idx:<3} | {it['name'][:24]:<24} | {it['quantity']:>3} | {format_currency(it['price']):>10} | {format_currency(line_amount):>10}")
-        print("-" * 60)
-        print(f"{'Total:':<48} {format_currency(total):>10}")
-        print("-" * 60)
-        print("[A] Add item  [R] Remove line  [C] Continue  [0] Cancel sale")
+        items = quote_res.get("items", [])
+        subtotal_str = quote_res.get("subtotal", "0.00")
+        discount_str = quote_res.get("discount", "0.00")
+        total_str = quote_res.get("total", "0.00")
+
+        header("PURCHASE CART", input_screen=False, width=64)
+        print(f"Customer: {customer_name} | Membership: {membership_label}")
+        print("-" * 64)
+        print(f"{'No':<3} | {'Item Name':<22} | {'Qty':>3} | {'Unit':>8} | {'Disc':>7} | {'Total':>8}")
+        print("-" * 64)
+
+        for idx, it in enumerate(items, 1):
+            name_snip = it["name"][:22]
+            print(f"{idx:<3} | {name_snip:<22} | {it['quantity']:>3} | {it['unit_price']:>8} | {it['discount']:>7} | {it['total']:>8}")
+        print("-" * 64)
+        print(f"{'Subtotal:':<54} {format_currency(subtotal_str):>9}")
+        print(f"{'Discount:':<54} {format_currency(discount_str):>9}")
+        print(f"{'Total Due:':<54} {format_currency(total_str):>9}")
+        print("-" * 64)
+        print("[A] Add item  [R] Remove line  [C] Checkout  [0] Cancel sale")
         choice = input("Enter choice: ").strip().lower()
 
         if choice in ("a", "add"):
-            pick_purchase_items(customer_id, customer_name, customer_type, member_tag, cart)
+            pick_purchase_items(customer_id, customer_name, membership_label, cart)
         elif choice in ("r", "remove"):
             if not cart:
                 print("Cart is empty.")
@@ -1705,15 +2165,15 @@ def manage_purchase_cart(customer_id, customer_name, customer_type, member_tag, 
             if not cart:
                 print("Cart is now empty.")
                 pause()
-                pick_purchase_items(customer_id, customer_name, customer_type, member_tag, cart)
+                pick_purchase_items(customer_id, customer_name, membership_label, cart)
                 if not cart:
                     return
-        elif choice in ("c", "continue"):
+        elif choice in ("c", "checkout", "continue"):
             if not cart:
                 print("Add at least one item first")
                 pause()
                 continue
-            completed = checkout_purchase(customer_id, customer_name, member_tag, cart, total)
+            completed = checkout_purchase(customer_id, customer_name, membership_label, cart, quote_res)
             if completed:
                 return
         elif choice in ("0", "cancel"):
@@ -1728,7 +2188,7 @@ def manage_purchase_cart(customer_id, customer_name, customer_type, member_tag, 
             pause()
 
 
-def pick_purchase_items(customer_id, customer_name, customer_type, member_tag, cart):
+def pick_purchase_items(customer_id, customer_name, membership_label, cart):
     all_products = request("GET", "/products")
     if not all_products:
         print("\nThere are no products or services available.")
@@ -1739,17 +2199,12 @@ def pick_purchase_items(customer_id, customer_name, customer_type, member_tag, c
     for p in all_products:
         if p.get("is_active", 1) != 1:
             continue
-        if p.get("category") in ("Membership", "Coaching") or p.get("name") in ("Yearly membership", "Monthly session"):
-            continue
-        applies = p.get("applies_to", "Anyone")
-        if customer_type == "Member" and applies == "Non-members only":
-            continue
-        if customer_type != "Member" and applies == "Members only":
+        if p.get("category") in ("Membership", "Coaching") or p.get("name") in ("Yearly membership", "Monthly session", "Daily session"):
             continue
         eligible_items.append(p)
 
     if not eligible_items:
-        print("\nNo eligible items available for this customer.")
+        print("\nNo eligible items available.")
         pause()
         return
 
@@ -1759,7 +2214,7 @@ def pick_purchase_items(customer_id, customer_name, customer_type, member_tag, c
 
     while True:
         header("SELECT ITEM", input_screen=False, width=width)
-        print(f"Customer: {customer_name} | {member_tag}")
+        print(f"Customer: {customer_name} | Membership: {membership_label}")
         print("=" * width)
         print(f"{'ID':<4} | {'Item Name':<30} | {'Category':<12} | {'Price':>8}")
         print("-" * width)
@@ -1793,14 +2248,14 @@ def pick_purchase_items(customer_id, customer_name, customer_type, member_tag, c
             pause()
             continue
         if not val.isdigit():
-            print("Item not available for this customer")
+            print("Invalid item ID.")
             pause()
             continue
 
         pid = int(val)
         matched = next((p for p in eligible_items if p["id"] == pid), None)
         if not matched:
-            print("Item not available for this customer")
+            print("Item not available.")
             pause()
             continue
 
@@ -1838,10 +2293,16 @@ def pick_purchase_items(customer_id, customer_name, customer_type, member_tag, c
         return
 
 
-def checkout_purchase(customer_id, customer_name, member_tag, cart, total):
+def checkout_purchase(customer_id, customer_name, membership_label, cart, quote_res):
+    total_str = quote_res["total"]
+    subtotal_str = quote_res["subtotal"]
+    discount_str = quote_res["discount"]
+    total_dec = Decimal(total_str)
+
     while True:
         header("PAYMENT", input_screen=False, width=58)
-        print(f"Total due: {format_currency(str(total))}")
+        print(f"Customer:    {customer_name}")
+        print(f"Total due:   {format_currency(total_str)}")
         print("-" * 58)
         print("Payment method:")
         print("[1] Cash")
@@ -1861,45 +2322,51 @@ def checkout_purchase(customer_id, customer_name, member_tag, cart, total):
         payment_method = "Cash" if choice == "1" else "E-Wallet"
 
         if payment_method == "Cash":
+            cancelled_tender = False
             while True:
-                tendered_input = input("Amount tendered: ").strip()
-                if tendered_input == "0":
+                tendered_input = input("Amount tendered [0 to cancel]: ").strip()
+                if tendered_input in ("0", "cancel", "b", "back"):
+                    cancelled_tender = True
                     break
                 try:
-                    tendered = Decimal(tendered_input)
-                    if tendered < total:
+                    tendered_dec = Decimal(tendered_input)
+                    if tendered_dec < total_dec:
                         print("Amount is less than the total due")
                         continue
-                    change = tendered - total
                     break
                 except InvalidOperation:
                     print("Enter a valid amount.")
                     continue
-            if tendered_input == "0":
+            if cancelled_tender:
                 continue
+            tendered_str = f"{tendered_dec:.2f}"
+            change_str = f"{tendered_dec - total_dec:.2f}"
         else:
-            tendered = total
-            change = Decimal("0.00")
+            tendered_str = total_str
+            change_str = "0.00"
 
-        header("CONFIRM PURCHASE", input_screen=False, width=58)
-        print(f"Customer:        {customer_name}")
-        print(f"Items:           {len(cart)}")
-        print(f"Total due:       {format_currency(str(total))}")
-        print(f"Payment method:  {payment_method}")
-        print(f"Amount tendered: {format_currency(str(tendered))}")
-        if payment_method == "Cash":
-            print(f"Change:          {format_currency(str(change))}")
-        print("-" * 58)
-        confirm = input("Save this purchase? (Y/N): ").strip().lower()
-        if confirm != "y":
-            print("Purchase not saved.")
+        confirmed = confirm_purchase_screen(
+            customer_name=customer_name,
+            membership_label=membership_label,
+            items_count=len(cart),
+            subtotal=subtotal_str,
+            discount=discount_str,
+            total=total_str,
+            payment_method=payment_method,
+            tendered=tendered_str,
+            change=change_str,
+        )
+        if not confirmed:
+            print("\nTransaction cancelled. Purchase not saved.")
             pause()
             return False
 
+        req_id = str(uuid.uuid4())
         payload = {
             "customer_id": customer_id,
             "payment_method": payment_method,
-            "amount_tendered": str(tendered),
+            "amount_tendered": tendered_str,
+            "request_id": req_id,
             "items": [{"product_id": it["product_id"], "quantity": it["quantity"]} for it in cart]
         }
         sale = request("POST", "/sales", payload)
@@ -1907,20 +2374,8 @@ def checkout_purchase(customer_id, customer_name, member_tag, cart, total):
             pause()
             return False
 
-        header("RECEIPT", input_screen=False, width=58)
-        print(f"Receipt no.: {sale['receipt_no']}")
-        print(f"Date:        {sale['created_at']}")
-        print(f"Customer:    {sale['customer_name']}")
-        print("-" * 58)
-        for it in sale.get("items", []):
-            line = f"{it['item_name']:<30} {it['quantity']} x {format_currency(it['unit_price']):>7}  {format_currency(it['line_amount']):>8}"
-            print(line)
-        print("-" * 58)
-        print(f"{'Total':<46} {format_currency(sale['total']):>10}")
-        print(f"Payment: {sale['payment_method']}")
-        print(f"{'Tendered':<46} {format_currency(sale['amount_tendered']):>10}")
-        print(f"{'Change':<46} {format_currency(sale['change']):>10}")
-        print("-" * 58)
+        print("\nPurchase recorded successfully!")
+        print_receipt(sale)
         pause()
         return True
 
@@ -2068,7 +2523,7 @@ def trainer_session_flow():
         if not chosen_trainer:
             continue
 
-        now_dt = datetime.now()
+        now_dt = ph_now()
         today_str = now_dt.strftime("%Y-%m-%d")
         now_time_str = now_dt.strftime("%H:%M")
 

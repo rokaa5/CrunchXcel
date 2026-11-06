@@ -1,9 +1,23 @@
 import re
 import unicodedata
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+# The Philippines has no daylight saving time, so a fixed UTC+8 offset is exact.
+PH_TZ = timezone(timedelta(hours=8))
+
+
+def ph_now() -> datetime:
+    """Current Philippine local date and time (naive, for storage and display)."""
+    return datetime.now(PH_TZ).replace(tzinfo=None)
+
+
+def ph_today() -> date:
+    """Current Philippine local date, used for membership validity and receipts."""
+    return ph_now().date()
 
 
 PHONE_PATTERN = re.compile(r"^(09|\+639)\d{9}$")
@@ -87,6 +101,8 @@ class Membership(AppBaseModel):
     start_date: date
     end_date: date
     method: str | None = None
+    amount_tendered: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=2)
+    request_id: str | None = Field(default=None, max_length=64)
 
 
 CATEGORY_TO_TYPE = {
@@ -184,6 +200,24 @@ class SaleCreate(AppBaseModel):
     payment_method: Literal["Cash", "E-Wallet"]
     amount_tendered: Decimal = Field(ge=0, max_digits=12, decimal_places=2)
     items: list[SaleLineItemCreate] = Field(min_length=1)
+    request_id: str | None = Field(default=None, max_length=64)
+
+    @field_validator("payment_method", mode="before")
+    @classmethod
+    def validate_payment_method(cls, v: str) -> str:
+        return normalize_method(v)
+
+
+class QuoteRequest(AppBaseModel):
+    customer_id: int | None = None
+    items: list[SaleLineItemCreate] = Field(min_length=1)
+
+
+class DailySessionCreate(AppBaseModel):
+    customer_id: int | None = None
+    payment_method: Literal["Cash", "E-Wallet"]
+    amount_tendered: Decimal = Field(ge=0, max_digits=12, decimal_places=2)
+    request_id: str | None = Field(default=None, max_length=64)
 
     @field_validator("payment_method", mode="before")
     @classmethod
@@ -207,6 +241,7 @@ class TrainerSessionCreate(AppBaseModel):
     session_datetime: str | None = None
     payment_method: Literal["Cash", "E-Wallet"]
     amount_tendered: Decimal = Field(ge=0, max_digits=12, decimal_places=2)
+    request_id: str | None = Field(default=None, max_length=64)
 
     @field_validator("payment_method", mode="before")
     @classmethod

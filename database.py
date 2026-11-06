@@ -121,6 +121,86 @@ def seed_default_trainers(db):
         )
 
 
+def add_column_if_missing(db, table, column, definition):
+    cols = [r[1] for r in db.execute(f"PRAGMA table_info({table})").fetchall()]
+    if column not in cols:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def migrate_sales_and_memberships(db):
+    """Add pricing, discount, idempotency, and membership-link columns without touching old rows."""
+    add_column_if_missing(db, "sales", "subtotal_cents", "INTEGER NOT NULL DEFAULT 0")
+    add_column_if_missing(db, "sales", "discount_cents", "INTEGER NOT NULL DEFAULT 0")
+    add_column_if_missing(db, "sales", "membership_status", "TEXT")
+    add_column_if_missing(db, "sales", "request_id", "TEXT")
+    add_column_if_missing(db, "sales", "kind", "TEXT NOT NULL DEFAULT 'Product'")
+    db.execute("UPDATE sales SET subtotal_cents = total_cents WHERE subtotal_cents = 0")
+    db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_request_id ON sales(request_id)")
+
+    add_column_if_missing(db, "sale_items", "discount_cents", "INTEGER NOT NULL DEFAULT 0")
+
+    add_column_if_missing(db, "memberships", "sale_id", "INTEGER")
+    add_column_if_missing(db, "memberships", "amount_cents", "INTEGER")
+    add_column_if_missing(db, "memberships", "created_at", "TEXT")
+    add_column_if_missing(db, "memberships", "cancelled_at", "TEXT")
+
+
+def backfill_membership_payments(db):
+    """Link legacy memberships to the payment recorded with them, when the match is unambiguous."""
+    groups = db.execute(
+        """SELECT DISTINCT customer_id, plan FROM memberships
+           WHERE sale_id IS NULL AND amount_cents IS NULL"""
+    ).fetchall()
+    for g in groups:
+        mems = db.execute(
+            """SELECT id FROM memberships
+               WHERE customer_id=? AND plan=? AND sale_id IS NULL AND amount_cents IS NULL
+               ORDER BY id""",
+            (g["customer_id"], g["plan"])
+        ).fetchall()
+        pays = db.execute(
+            """SELECT amount_cents, created_at FROM payments
+               WHERE customer_id=? AND (description=? OR description=?)
+               ORDER BY id""",
+            (g["customer_id"], f"Plan: {g['plan']}", f"Plan Renewal: {g['plan']}")
+        ).fetchall()
+        if len(mems) == len(pays):
+            for m, p in zip(mems, pays):
+                db.execute(
+                    "UPDATE memberships SET amount_cents=?, created_at=? WHERE id=?",
+                    (p["amount_cents"], p["created_at"], m["id"])
+                )
+
+
+def ensure_daily_session_product(db):
+    """Daily gym access has its own menu. Hide the two old catalog items and add one standard item.
+
+    Old items are deactivated (not deleted) so existing purchases and receipts keep their references.
+    """
+    db.execute(
+        "UPDATE products SET is_active = 0 WHERE name IN ('Member session, daily', 'Walk-in non-member, daily')"
+    )
+    exists = db.execute("SELECT 1 FROM products WHERE name = 'Daily session'").fetchone()
+    if not exists:
+        db.execute(
+            """INSERT INTO products (name, category, type, price_cents, applies_to, is_active)
+               VALUES ('Daily session', 'Gym Access', 'Service', 7000, 'Anyone', 1)"""
+        )
+
+
+def seed_default_discount_rules(db):
+    """Seed the member rate from the posted price list: daily session is 70.00, 50.00 for members."""
+    if db.execute("SELECT COUNT(*) FROM discount_rules").fetchone()[0] > 0:
+        return
+    daily = db.execute("SELECT id FROM products WHERE name = 'Daily session'").fetchone()
+    if daily:
+        db.execute(
+            """INSERT INTO discount_rules (product_id, membership_type, discount_type, value, is_active)
+               VALUES (?, 'Yearly', 'fixed', 2000, 1)""",
+            (daily["id"],)
+        )
+
+
 def initialize_database():
     with connect() as db:
         db.executescript("""
@@ -222,8 +302,32 @@ def initialize_database():
             FOREIGN KEY(product_id) REFERENCES products(id),
             FOREIGN KEY(trainer_id) REFERENCES trainers(id)
         );
+
+        CREATE TABLE IF NOT EXISTS visits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER NOT NULL,
+            check_in_at TEXT NOT NULL,
+            used TEXT NOT NULL,
+            sale_id INTEGER,
+            FOREIGN KEY(customer_id) REFERENCES customers(id),
+            FOREIGN KEY(sale_id) REFERENCES sales(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS discount_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER NOT NULL,
+            membership_type TEXT NOT NULL CHECK(membership_type IN ('Yearly', 'Monthly')),
+            discount_type TEXT NOT NULL CHECK(discount_type IN ('percent', 'fixed')),
+            value INTEGER NOT NULL CHECK(value > 0),
+            is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
+            FOREIGN KEY(product_id) REFERENCES products(id)
+        );
         """)
         migrate_customers_table(db)
         migrate_products_table(db)
+        migrate_sales_and_memberships(db)
         seed_default_products(db)
+        ensure_daily_session_product(db)
         seed_default_trainers(db)
+        seed_default_discount_rules(db)
+        backfill_membership_payments(db)
