@@ -3297,105 +3297,128 @@ def search_records():
 
 # SALES REPORTS
 
-def display_sales_report(title, period):
-    data = request("GET", "/reports/sales", params={"period": period})
-    if data is None:
+def daily_transactions():
+    """Show all daily transaction records in one chronological, paginated list."""
+    periods = request("GET", "/reports/sales", params={"period": "daily"})
+    if periods is None:
+        pause()
+        return
+    transactions = [
+        {"date": day["period"], **record}
+        for day in periods for record in day.get("transactions", [])
+    ]
+    transactions.sort(
+        key=lambda row: (row["date"], row.get("time", ""), row["receipt_no"]),
+        reverse=True,
+    )
+
+    if not transactions:
+        header("DAILY TRANSACTIONS", input_screen=False, width=100)
+        print("No daily transactions are recorded.")
         pause()
         return
 
-    if not data:
-        header(title, input_screen=False, width=60)
-        print(f"\nThere are no records for {title.lower()} right now.")
-        pause()
-        return
-
+    columns = [
+        ("Receipt No.", "receipt_no", 13),
+        ("Date", "date", 12),
+        ("Time", "time", 7),
+        ("Product / Service", "item_name", 44),
+        ("Amount", lambda row: format_currency(row["total"]), 13, "right"),
+        ("Status", "status", 10),
+    ]
+    width = table_width(columns, 116)
     page = 1
-    transaction_page = 1
-    transaction_page_size = 8
-    total_pages = len(data)
-    width = 112
+    page_size = 10
+    pages = (len(transactions) + page_size - 1) // page_size
 
     while True:
-        record = data[page - 1]
-        header(title, input_screen=False, width=width)
-        period_label = "Date" if period == "daily" else "Month"
-        print(f"{period_label}: {record['period']}")
-        category_columns = [
-            ("Category", "category", 38),
-            ("Transactions", "transactions", 24, "right"),
-            ("Amount", lambda row: format_currency(row["amount"]), 30, "right"),
-        ]
+        header("DAILY TRANSACTIONS", input_screen=False, width=width)
+        print(f"Transactions: {len(transactions)}    Page {page} of {pages}")
         print("-" * width)
-        print_table_header(category_columns)
+        print_table_header(columns)
         print("-" * width)
-        for cat in record.get("categories", []):
-            print_table_row(cat, category_columns)
+        for record in transactions[(page - 1) * page_size:page * page_size]:
+            print_table_row(record, columns)
         print("-" * width)
-        print_table_row({
-            "category": "Total sales",
-            "transactions": record["total_transactions"],
-            "amount": record["total_sales"],
-        }, category_columns)
-        print("-" * width)
-        print(f"Voided sales excluded: {record.get('voided_count', 0)}")
 
-        tx_total_pages = 1
-        if period == "daily" and record.get("transactions"):
-            transactions = record["transactions"]
-            tx_total_pages = max(1, (len(transactions) + transaction_page_size - 1) // transaction_page_size)
-            transaction_page = min(transaction_page, tx_total_pages)
-            begin_index = (transaction_page - 1) * transaction_page_size
-            transaction_columns = [
-                ("Receipt No.", "receipt_no", 12),
-                ("Time", "time", 8),
-                ("Item Name", "item_name", 40),
-                ("Total", lambda row: format_currency(row["total"]), 13, "right"),
-                ("Status", "status", 10),
-            ]
-            print(f"\nTransactions: Page {transaction_page} of {tx_total_pages}\n")
-            print_table_header(transaction_columns)
-            print("-" * width)
-            for tx in transactions[begin_index:begin_index + transaction_page_size]:
-                print_table_row(tx, transaction_columns)
+        if pages == 1:
+            pause()
+            return
 
-        print("-" * width)
-        print(f"REPORT PERIOD   Page {page} of {total_pages}")
-        period_nav = []
-        if page > 1:
-            period_nav.append("[<<] Previous period")
-        if page < total_pages:
-            period_nav.append("[>>] Next period")
-        period_nav.append("[0] Back")
-        print("        ".join(period_nav))
-
-        if tx_total_pages > 1:
-            print()
-            print(f"TRANSACTIONS    Page {transaction_page} of {tx_total_pages}")
-            tx_nav = []
-            if transaction_page > 1:
-                tx_nav.append("[<] Previous page")
-            if transaction_page < tx_total_pages:
-                tx_nav.append("[>] Next page")
-            print("        ".join(tx_nav))
-        print()
-
+        print(page_nav_options(page, pages, include_back=True))
         choice = input("Choice: ").strip().lower()
         if choice in ("0", "b", "back"):
             return
-        if choice == ">" and transaction_page < tx_total_pages:
-            transaction_page += 1
-            continue
-        if choice == "<" and transaction_page > 1:
-            transaction_page -= 1
-            continue
-        if choice in (">>", "n", "next") and page < total_pages:
+        if choice in (">", "n", "next") and page < pages:
             page += 1
-            transaction_page = 1
             continue
-        if choice in ("<<", "p", "prev", "previous") and page > 1:
+        if choice in ("<", "p", "prev", "previous") and page > 1:
             page -= 1
-            transaction_page = 1
             continue
+        print("Choose <, >, or 0.")
+        pause()
+
+
+def monthly_sales_report():
+    """Display the monthly summary; use Enter for a single month."""
+    periods = request("GET", "/reports/sales", params={"period": "monthly"})
+    if periods is None:
+        pause()
+        return
+    if not periods:
+        header("MONTHLY SALES REPORT", input_screen=False, width=104)
+        print("There are no monthly sales records.")
+        pause()
+        return
+
+    columns = [
+        ("Category", "category", 38),
+        ("Transactions", "transactions", 24, "right"),
+        ("Amount", lambda row: format_currency(row["amount"]), 30, "right"),
+    ]
+    width = table_width(columns, 112)
+    page = 1
+    pages = len(periods)
+
+    while True:
+        record = periods[page - 1]
+        header("MONTHLY SALES REPORT", input_screen=False, width=width)
+        print(f"Month: {record['period']}")
+        print()
+        print_table_header(columns)
+        print("-" * width)
+        for category in record.get("categories", []):
+            print_table_row(category, columns)
+        print("-" * width)
+        print(f"Gross Sales:       {format_currency(record.get('gross_sales', record['total_sales']))}")
+        print(f"Refunds Issued:    -{format_currency(record.get('refunds_total', '0.00'))}")
+        print_table_row({
+            "category": "Net Sales",
+            "transactions": record["total_transactions"],
+            "amount": record["total_sales"],
+        }, columns)
+        print("-" * width)
+        if record.get("voided_count"):
+            print(f"Historical voided sales excluded: {record['voided_count']}")
+        print()
+
+        if pages == 1:
+            pause()
+            return
+
+        print(f"Month {page} of {pages}")
+        print(page_nav_options(page, pages, include_back=True))
+        choice = input("Choice: ").strip().lower()
+        if choice in ("0", "b", "back"):
+            return
+        if choice in (">", "n", "next") and page < pages:
+            page += 1
+            continue
+        if choice in ("<", "p", "prev", "previous") and page > 1:
+            page -= 1
+            continue
+        print("Choose <, >, or 0.")
+        pause()
 
 
 def report(endpoint, title, params=None):
@@ -3479,12 +3502,12 @@ def report(endpoint, title, params=None):
 def sales_reports():
     submenu("SALES REPORTS", [
         (
-            "Daily Sales Report",
-            lambda: display_sales_report("DAILY SALES REPORT", "daily")
+            "Daily Transactions",
+            daily_transactions
         ),
         (
             "Monthly Sales Report",
-            lambda: display_sales_report("MONTHLY SALES REPORT", "monthly")
+            monthly_sales_report
         ),
         (
             "Membership Summary",
