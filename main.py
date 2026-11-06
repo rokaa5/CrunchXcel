@@ -515,7 +515,7 @@ def print_receipt(sale, width=58):
     header("RECEIPT", input_screen=False, width=width)
     print(f"Receipt no.: {sale.get('receipt_no', '-')}")
     print(f"Date:        {sale.get('created_at', '-')}")
-    if sale.get("kind") != "product" or sale.get("customer_id") is not None:
+    if str(sale.get("kind", "")).lower() != "product" or sale.get("customer_id") is not None:
         print(f"Customer:    {sale.get('customer_name', 'Walk-in')}")
         if sale.get("customer_id") is not None:
             print(f"Customer ID: {sale['customer_id']}")
@@ -2981,7 +2981,7 @@ def view_sale_details(sale_id):
         header("PURCHASE DETAILS", input_screen=False, width=64)
         print(f"Receipt No:     {sale['receipt_no']}")
         print(f"Date & Time:    {sale['created_at']}")
-        if sale.get("kind") != "product" or sale.get("customer_id") is not None:
+        if str(sale.get("kind", "")).lower() != "product" or sale.get("customer_id") is not None:
             print(f"Customer:       {sale['customer_name']} ({sale['customer_type']})")
         print(f"Status:         {sale['status']}")
         if sale["status"] == "Voided":
