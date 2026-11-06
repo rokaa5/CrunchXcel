@@ -493,10 +493,12 @@ def confirm_purchase_screen(
     tendered: str,
     change: str,
     width: int = 50,
+    anonymous_product: bool = False,
 ) -> bool:
     header("CONFIRM PURCHASE", input_screen=False, width=width)
-    print(f"{'Customer:':<18}{customer_name}")
-    print(f"{'Membership:':<18}{membership_label}")
+    if not anonymous_product:
+        print(f"{'Customer:':<18}{customer_name}")
+        print(f"{'Membership:':<18}{membership_label}")
     print(f"{'Items:':<18}{items_count}")
     print(f"{'Subtotal:':<18}{format_currency(subtotal)}")
     print(f"{'Discount:':<18}{format_currency(discount)}")
@@ -2145,14 +2147,20 @@ def manage_purchase_cart(customer_id, customer_name, membership_label, cart):
         total_str = quote_res.get("total", "0.00")
 
         header("PURCHASE CART", input_screen=False, width=64)
-        print(f"Customer: {customer_name} | Membership: {membership_label}")
         print("-" * 64)
         print(f"{'No':<3} | {'Item Name':<22} | {'Qty':>3} | {'Unit':>8} | {'Disc':>7} | {'Total':>8}")
         print("-" * 64)
 
         for idx, it in enumerate(items, 1):
-            name_snip = it["name"][:22]
-            print(f"{idx:<3} | {name_snip:<22} | {it['quantity']:>3} | {it['unit_price']:>8} | {it['discount']:>7} | {it['total']:>8}")
+            print_table_row({
+                "number": idx, "name": it["name"], "qty": it["quantity"],
+                "unit": it["unit_price"], "discount": it["discount"],
+                "total": it["total"],
+            }, [
+                ("No", "number", 3), ("Item Name", "name", 22),
+                ("Qty", "qty", 3, "right"), ("Unit", "unit", 8, "right"),
+                ("Disc", "discount", 7, "right"), ("Total", "total", 8, "right"),
+            ])
         print("-" * 64)
         print(f"{'Subtotal:':<54} {format_currency(subtotal_str):>9}")
         print(f"{'Discount:':<54} {format_currency(discount_str):>9}")
@@ -2226,15 +2234,17 @@ def pick_purchase_items(customer_id, customer_name, membership_label, cart):
 
     while True:
         header("SELECT ITEM", input_screen=False, width=width)
-        print(f"Customer: {customer_name} | Membership: {membership_label}")
-        print("=" * width)
         print(f"{'ID':<4} | {'Item Name':<30} | {'Category':<12} | {'Price':>8}")
         print("-" * width)
 
         start = (page - 1) * PAGE_SIZE
         end = min(start + PAGE_SIZE, len(eligible_items))
         for p in eligible_items[start:end]:
-            print(f"{p['id']:<4} | {p['name'][:30]:<30} | {p['category'][:12]:<12} | {format_currency(p['price']):>8}")
+            print_table_row(p, [
+                ("ID", "id", 4), ("Item Name", "name", 30),
+                ("Category", "category", 12),
+                ("Price", lambda item: format_currency(item["price"]), 8, "right"),
+            ])
 
         print("-" * width)
         nav = [f"Page {page} of {total_pages}"]
@@ -2313,7 +2323,6 @@ def checkout_purchase(customer_id, customer_name, membership_label, cart, quote_
 
     while True:
         header("PAYMENT", input_screen=False, width=58)
-        print(f"Customer:    {customer_name}")
         print(f"Total due:   {format_currency(total_str)}")
         print("-" * 58)
         print("Payment method:")
@@ -2367,6 +2376,7 @@ def checkout_purchase(customer_id, customer_name, membership_label, cart, quote_
             payment_method=payment_method,
             tendered=tendered_str,
             change=change_str,
+            anonymous_product=True,
         )
         if not confirmed:
             print("\nTransaction cancelled. Purchase not saved.")
@@ -2774,7 +2784,7 @@ def trainer_session_flow():
 
 def services_products_menu():
     submenu("SERVICES/PRODUCTS", [
-        ("Record Product Purchase", record_purchase),
+        ("Product Purchase", record_purchase),
         ("Book Trainer Session", trainer_session_flow),
         ("Manage Products and Services", products_services),
     ])
