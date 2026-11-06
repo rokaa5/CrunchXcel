@@ -567,7 +567,8 @@ def table_width(columns, minimum=0):
 
 
 def print_table_header(columns, compact=False):
-    print()
+    if not compact:
+        print()
     cells = []
     for col in columns:
         label, width = col[0], col[2]
@@ -676,7 +677,8 @@ def render_data_table(title, records, columns, page, width=None, always_show_bac
             print(footer_text)
         if navigation:
             print(navigation)
-    print()
+    if not compact:
+        print()
 
 
 def render_customer_selection_list(title, customers, page, banner=None):
@@ -721,6 +723,8 @@ def select_customer_from_list(title, empty_action, eligibility=None, empty_messa
         ]
         render_data_table(title, customers, cols, page, width=width, always_show_back=True, banner=active_banner, compact=compact)
         active_banner = None
+        if compact:
+            print("-" * table_width(cols, width))
 
         while True:
             value = input("Enter customer ID: ").strip()
@@ -1250,6 +1254,7 @@ def view_plan_memberships(plan_name, status="all"):
         page = min(page, pages)
         header(title, input_screen=False, width=width)
         print(f"Status: {status.title()}    Records: {len(records)}    Page {page} of {pages}")
+        print("-" * width)
         print_table_header(columns, compact=True)
         print("-" * width)
         for record in records[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]:
@@ -1257,7 +1262,6 @@ def view_plan_memberships(plan_name, status="all"):
         if not records:
             print("No matching memberships found.")
         print("-" * width)
-        print()
         controls = "[1] Active        [2] Expired        [3] All"
         if pages > 1:
             controls += "        [<] Previous page        [>] Next page"
