@@ -1054,6 +1054,200 @@ def list_payments(method: str = "", search: str = ""):
     return formatted
 
 
+@app.get("/transactions/search")
+def search_transactions(scope: str, query: str):
+    """Search sales and legacy payments without duplicating membership purchases."""
+    scope = scope.strip().lower()
+    term = query.strip()
+    if scope not in ("customer", "item", "payment"):
+        raise HTTPException(422, "Search by customer, item, or payment.")
+    if not term:
+        raise HTTPException(422, "Enter a customer, item, service, or payment reference.")
+    if len(term) > 120:
+        raise HTTPException(422, "Search term must be at most 120 characters.")
+
+    # Escape LIKE wildcards so an item name is treated as literal text.
+    pattern = "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    sales_sql = "SELECT s.* FROM sales s WHERE 1=1"
+    payment_sql = """
+        SELECT p.*, c.first_name || ' ' || c.last_name AS customer_name
+        FROM payments p JOIN customers c ON c.id = p.customer_id
+        WHERE 1=1
+    """
+    sales_params = []
+    payment_params = []
+    numeric_id = int(term) if term.isdecimal() else None
+
+    if scope == "customer":
+        if numeric_id is not None:
+            sales_sql += " AND s.customer_id = ?"
+            payment_sql += " AND p.customer_id = ?"
+            sales_params.append(numeric_id)
+            payment_params.append(numeric_id)
+        else:
+            sales_sql += """
+                AND (s.customer_name LIKE ? ESCAPE '\\'
+                    OR EXISTS (
+                        SELECT 1 FROM customers c WHERE c.id = s.customer_id
+                          AND (c.first_name || ' ' || c.last_name) LIKE ? ESCAPE '\\'
+                    ))
+            """
+            payment_sql += """
+                AND (c.first_name || ' ' || c.last_name) LIKE ? ESCAPE '\\'
+            """
+            sales_params.extend([pattern, pattern])
+            payment_params.append(pattern)
+
+    elif scope == "item":
+        if numeric_id is not None:
+            sales_sql += """
+                AND EXISTS (
+                    SELECT 1 FROM sale_items si
+                    WHERE si.sale_id = s.id AND si.product_id = ?
+                )
+            """
+            payment_sql += """
+                AND (
+                    EXISTS (SELECT 1 FROM purchases pu
+                            WHERE pu.payment_id = p.id AND pu.product_id = ?)
+                    OR EXISTS (
+                        SELECT 1 FROM products pr WHERE pr.id = ?
+                        AND p.description LIKE '%' || pr.name || '%'
+                    )
+                )
+            """
+            sales_params.append(numeric_id)
+            payment_params.extend([numeric_id, numeric_id])
+        else:
+            sales_sql += """
+                AND (
+                    EXISTS (
+                        SELECT 1 FROM sale_items si
+                        LEFT JOIN products pr ON pr.id = si.product_id
+                        WHERE si.sale_id = s.id AND (
+                            si.item_name LIKE ? ESCAPE '\\'
+                            OR si.category LIKE ? ESCAPE '\\'
+                            OR pr.name LIKE ? ESCAPE '\\'
+                        )
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM trainer_sessions ts WHERE ts.sale_id = s.id
+                        AND ts.session_label LIKE ? ESCAPE '\\'
+                    )
+                )
+            """
+            payment_sql += """
+                AND (
+                    p.description LIKE ? ESCAPE '\\'
+                    OR EXISTS (
+                        SELECT 1 FROM purchases pu
+                        JOIN products pr ON pr.id = pu.product_id
+                        WHERE pu.payment_id = p.id
+                        AND pr.name LIKE ? ESCAPE '\\'
+                    )
+                )
+            """
+            sales_params.extend([pattern] * 4)
+            payment_params.extend([pattern] * 2)
+
+    else:
+        if numeric_id is not None:
+            # Numeric IDs mean payment-record IDs; receipts use R-... references.
+            sales_sql += " AND 0=1"
+            payment_sql += " AND p.id = ?"
+            payment_params.append(numeric_id)
+        else:
+            sales_sql += " AND s.receipt_no LIKE ? ESCAPE '\\'"
+            sales_params.append(pattern)
+            if term.upper().startswith("PAY-") and term[4:].isdigit():
+                payment_sql += " AND p.id = ?"
+                payment_params.append(int(term[4:]))
+            else:
+                payment_sql += " AND 0=1"
+
+    if scope != "payment":
+        # Membership registration creates both a sales receipt and a payments
+        # record. Display the receipt only; keep genuine legacy payments.
+        payment_sql += """
+            AND NOT EXISTS (
+                SELECT 1 FROM memberships m
+                JOIN sales linked_sale ON linked_sale.id = m.sale_id
+                WHERE m.customer_id = p.customer_id
+                  AND m.created_at = p.created_at
+                  AND m.amount_cents = p.amount_cents
+                  AND (p.description = 'Plan: ' || m.plan
+                       OR p.description = 'Plan Renewal: ' || m.plan)
+            )
+        """
+
+    with connect() as db:
+        sales_rows = rows(db.execute(
+            sales_sql + " ORDER BY s.created_at DESC, s.id DESC",
+            sales_params,
+        ))
+        payment_rows = rows(db.execute(
+            payment_sql + " ORDER BY p.created_at DESC, p.id DESC",
+            payment_params,
+        ))
+
+        results = []
+        for sale in sales_rows:
+            items = db.execute(
+                "SELECT item_name, quantity FROM sale_items WHERE sale_id = ? ORDER BY id",
+                (sale["id"],),
+            ).fetchall()
+            descriptions = [
+                f"{item['quantity']} x {item['item_name']}" if item["quantity"] > 1 else item["item_name"]
+                for item in items
+            ]
+            if sale["kind"] == "trainer":
+                trainer = db.execute(
+                    "SELECT session_label FROM trainer_sessions WHERE sale_id = ?",
+                    (sale["id"],),
+                ).fetchone()
+                if trainer and trainer["session_label"]:
+                    descriptions = [trainer["session_label"]]
+
+            results.append({
+                "reference": sale["receipt_no"],
+                "record_type": "sale",
+                "record_id": sale["id"],
+                "created_at": sale["created_at"],
+                "customer_id": sale["customer_id"],
+                "customer_name": sale["customer_name"],
+                "item_names": ", ".join(descriptions) or sale["kind"].replace("_", " ").title(),
+                "amount": money(sale["total_cents"]),
+                "payment_method": sale["payment_method"],
+                "status": sale["status"],
+            })
+
+        for payment in payment_rows:
+            purchased = db.execute("""
+                SELECT pr.name, pu.quantity
+                FROM purchases pu JOIN products pr ON pr.id = pu.product_id
+                WHERE pu.payment_id = ? ORDER BY pu.id
+            """, (payment["id"],)).fetchall()
+            descriptions = [
+                f"{item['quantity']} x {item['name']}" if item["quantity"] > 1 else item["name"]
+                for item in purchased
+            ]
+            results.append({
+                "reference": f"PAY-{payment['id']:06d}",
+                "record_type": "payment",
+                "record_id": payment["id"],
+                "created_at": payment["created_at"],
+                "customer_id": payment["customer_id"],
+                "customer_name": payment["customer_name"],
+                "item_names": ", ".join(descriptions) or payment["description"],
+                "amount": money(payment["amount_cents"]),
+                "payment_method": payment["method"],
+                "status": "Completed",
+            })
+
+    results.sort(key=lambda row: (row["created_at"], row["record_id"]), reverse=True)
+    return results
+
+
 # PRODUCTS AND SERVICES
 
 @app.post("/products", status_code=201)
@@ -1697,25 +1891,38 @@ def sales_report(period: str = "daily"):
             tx_list = []
             if period == "daily":
                 sale_txs = db.execute("""
-                    SELECT receipt_no, created_at, customer_name, total_cents, status
+                    SELECT id, receipt_no, created_at, customer_name, total_cents, status, kind
                     FROM sales
                     WHERE strftime('%Y-%m-%d', created_at) = ?
                     ORDER BY created_at DESC, id DESC
                 """, (p,)).fetchall()
                 for s in sale_txs:
                     time_str = s["created_at"][11:16] if len(s["created_at"]) >= 16 else s["created_at"]
+                    sold_items = db.execute(
+                        "SELECT item_name, quantity FROM sale_items WHERE sale_id = ? ORDER BY id",
+                        (s["id"],),
+                    ).fetchall()
+                    item_names = [
+                        f"{item['quantity']} x {item['item_name']}" if item["quantity"] > 1 else item["item_name"]
+                        for item in sold_items
+                    ]
+                    if s["kind"] == "trainer":
+                        trainer = db.execute(
+                            "SELECT session_label FROM trainer_sessions WHERE sale_id = ?",
+                            (s["id"],),
+                        ).fetchone()
+                        if trainer and trainer["session_label"]:
+                            item_names = [trainer["session_label"]]
                     tx_list.append({
                         "receipt_no": s["receipt_no"],
                         "time": time_str,
-                        "customer": s["customer_name"],
+                        "item_name": ", ".join(item_names) or (s["kind"] or "Transaction").replace("_", " ").title(),
                         "total": money(s["total_cents"]),
                         "status": s["status"]
                     })
                 mem_txs = db.execute("""
-                    SELECT p.id, p.created_at, p.amount_cents,
-                           c.first_name || ' ' || c.last_name AS customer_name
+                    SELECT p.id, p.created_at, p.amount_cents, p.description
                     FROM payments p
-                    JOIN customers c ON c.id = p.customer_id
                     WHERE strftime('%Y-%m-%d', p.created_at) = ?
                     ORDER BY p.created_at DESC, p.id DESC
                 """, (p,)).fetchall()
@@ -1724,7 +1931,7 @@ def sales_report(period: str = "daily"):
                     tx_list.append({
                         "receipt_no": f"PAY-{m['id']:04d}",
                         "time": time_str,
-                        "customer": m["customer_name"],
+                        "item_name": m["description"].removeprefix("Plan Renewal: ").removeprefix("Plan: "),
                         "total": money(m["amount_cents"]),
                         "status": "Completed"
                     })

@@ -493,10 +493,12 @@ def confirm_purchase_screen(
     tendered: str,
     change: str,
     width: int = 50,
+    anonymous_product: bool = False,
 ) -> bool:
     header("CONFIRM PURCHASE", input_screen=False, width=width)
-    print(f"{'Customer:':<18}{customer_name}")
-    print(f"{'Membership:':<18}{membership_label}")
+    if not anonymous_product:
+        print(f"{'Customer:':<18}{customer_name}")
+        print(f"{'Membership:':<18}{membership_label}")
     print(f"{'Items:':<18}{items_count}")
     print(f"{'Subtotal:':<18}{format_currency(subtotal)}")
     print(f"{'Discount:':<18}{format_currency(discount)}")
@@ -513,15 +515,20 @@ def print_receipt(sale, width=58):
     header("RECEIPT", input_screen=False, width=width)
     print(f"Receipt no.: {sale.get('receipt_no', '-')}")
     print(f"Date:        {sale.get('created_at', '-')}")
-    print(f"Customer:    {sale.get('customer_name', 'Walk-in')}")
-    if sale.get("customer_id") is not None:
-        print(f"Customer ID: {sale['customer_id']}")
+    if str(sale.get("kind", "")).lower() != "product" or sale.get("customer_id") is not None:
+        print(f"Customer:    {sale.get('customer_name', 'Walk-in')}")
+        if sale.get("customer_id") is not None:
+            print(f"Customer ID: {sale['customer_id']}")
     print("-" * width)
     for it in sale.get("items", []):
-        disc_val = Decimal(str(it.get("discount", 0)))
-        disc_str = f" (-{format_currency(it['discount'])})" if disc_val > 0 else ""
-        line = f"{it['item_name'][:24]:<24} {it['quantity']} x {format_currency(it['unit_price']):>7}{disc_str}  {format_currency(it['line_amount']):>8}"
-        print(line)
+        for name_line in wrap_cell(it["item_name"], width - 4):
+            print(f"  {name_line}")
+        print(
+            f"  {it['quantity']} x {format_currency(it['unit_price'])} = "
+            f"{format_currency(it['line_amount'])}"
+        )
+        if Decimal(str(it.get("discount", 0))) > 0:
+            print(f"  Discount: -{format_currency(it['discount'])}")
     print("-" * width)
     disc_total = Decimal(str(sale.get("discount", 0)))
     if disc_total > 0:
@@ -2145,14 +2152,20 @@ def manage_purchase_cart(customer_id, customer_name, membership_label, cart):
         total_str = quote_res.get("total", "0.00")
 
         header("PURCHASE CART", input_screen=False, width=64)
-        print(f"Customer: {customer_name} | Membership: {membership_label}")
         print("-" * 64)
         print(f"{'No':<3} | {'Item Name':<22} | {'Qty':>3} | {'Unit':>8} | {'Disc':>7} | {'Total':>8}")
         print("-" * 64)
 
         for idx, it in enumerate(items, 1):
-            name_snip = it["name"][:22]
-            print(f"{idx:<3} | {name_snip:<22} | {it['quantity']:>3} | {it['unit_price']:>8} | {it['discount']:>7} | {it['total']:>8}")
+            print_table_row({
+                "number": idx, "name": it["name"], "qty": it["quantity"],
+                "unit": it["unit_price"], "discount": it["discount"],
+                "total": it["total"],
+            }, [
+                ("No", "number", 3), ("Item Name", "name", 22),
+                ("Qty", "qty", 3, "right"), ("Unit", "unit", 8, "right"),
+                ("Disc", "discount", 7, "right"), ("Total", "total", 8, "right"),
+            ])
         print("-" * 64)
         print(f"{'Subtotal:':<54} {format_currency(subtotal_str):>9}")
         print(f"{'Discount:':<54} {format_currency(discount_str):>9}")
@@ -2226,15 +2239,17 @@ def pick_purchase_items(customer_id, customer_name, membership_label, cart):
 
     while True:
         header("SELECT ITEM", input_screen=False, width=width)
-        print(f"Customer: {customer_name} | Membership: {membership_label}")
-        print("=" * width)
         print(f"{'ID':<4} | {'Item Name':<30} | {'Category':<12} | {'Price':>8}")
         print("-" * width)
 
         start = (page - 1) * PAGE_SIZE
         end = min(start + PAGE_SIZE, len(eligible_items))
         for p in eligible_items[start:end]:
-            print(f"{p['id']:<4} | {p['name'][:30]:<30} | {p['category'][:12]:<12} | {format_currency(p['price']):>8}")
+            print_table_row(p, [
+                ("ID", "id", 4), ("Item Name", "name", 30),
+                ("Category", "category", 12),
+                ("Price", lambda item: format_currency(item["price"]), 8, "right"),
+            ])
 
         print("-" * width)
         nav = [f"Page {page} of {total_pages}"]
@@ -2313,7 +2328,6 @@ def checkout_purchase(customer_id, customer_name, membership_label, cart, quote_
 
     while True:
         header("PAYMENT", input_screen=False, width=58)
-        print(f"Customer:    {customer_name}")
         print(f"Total due:   {format_currency(total_str)}")
         print("-" * 58)
         print("Payment method:")
@@ -2367,6 +2381,7 @@ def checkout_purchase(customer_id, customer_name, membership_label, cart, quote_
             payment_method=payment_method,
             tendered=tendered_str,
             change=change_str,
+            anonymous_product=True,
         )
         if not confirmed:
             print("\nTransaction cancelled. Purchase not saved.")
@@ -2774,7 +2789,7 @@ def trainer_session_flow():
 
 def services_products_menu():
     submenu("SERVICES/PRODUCTS", [
-        ("Record Product Purchase", record_purchase),
+        ("Product Purchase", record_purchase),
         ("Book Trainer Session", trainer_session_flow),
         ("Manage Products and Services", products_services),
     ])
@@ -2840,67 +2855,121 @@ def search_customer_id():
     pause()
 
 
-def search_membership():
-    if not guard_records("memberships", "search", "SEARCH MEMBERSHIP", input_screen=True):
-        return
-
-    membership_id = ask_number("Membership ID: ")
-
-    records = request("GET", "/memberships")
-
-    if records is None:
-        pause()
-        return
-
-    membership = next(
-        (
-            item for item in records
-            if item["id"] == membership_id
-        ),
-        None
-    )
-
-    if membership:
-        show(membership)
-    else:
-        header("SEARCH MEMBERSHIP", input_screen=False)
-        print("\nThat membership was not found.")
-
-    pause()
-
-
 def search_payment():
-    if not guard_records("payments", "search", "SEARCH PAYMENT", input_screen=True):
-        return
+    """Find recorded purchases and services by customer, item, or payment reference."""
+    scopes = {
+        "1": ("customer", "Customer name or ID"),
+        "2": ("item", "Product or service name or ID"),
+        "3": ("payment", "Payment ID or receipt number"),
+    }
 
-    query = ask("Search (Customer Name, Customer ID, or Payment ID): ")
+    while True:
+        header("SEARCH TRANSACTIONS", input_screen=False, width=78)
+        print("[1] Customer Name or ID")
+        print("[2] Product / Service Name or ID")
+        print("[3] Payment ID or Receipt Number")
+        print("-" * 78)
+        print("[0] Back")
+        print("-" * 78)
+        selection = input("Choice: ").strip().lower()
+        if selection in ("0", "b", "back"):
+            return
+        if selection not in scopes:
+            print("Invalid choice.")
+            pause()
+            continue
 
-    records = request("GET", "/payments", params={"search": query})
-    if records is None:
-        pause()
-        return
+        scope, label = scopes[selection]
+        header("SEARCH TRANSACTIONS", input_screen=False, width=78)
+        print(f"Search by: {label}")
+        print("[0] Back")
+        print("-" * 78)
+        term = input("Search: ").strip()
+        if term.lower() in ("0", "b", "back"):
+            continue
+        if not term:
+            print("Enter a search term.")
+            pause()
+            continue
 
-    if not records:
-        header("SEARCH PAYMENT", input_screen=False)
-        print(f'\nNo payments found matching "{query}".')
-        pause()
-        return
+        records = request(
+            "GET", "/transactions/search",
+            params={"scope": scope, "query": term},
+        )
+        if records is None:
+            pause()
+            continue
+        if not records:
+            header("SEARCH RESULTS", input_screen=False, width=78)
+            print(f"No transactions found for '{term}'.")
+            pause()
+            continue
 
-    columns = [
-        ("ID", "id", 4),
-        ("Customer", "customer_name", 18),
-        ("Description", "description", 24),
-        ("Method", "method", 10),
-        ("Amount", lambda r: format_currency(r.get("amount")), 10, "right"),
-    ]
-    paginated_view(
-        "SEARCH PAYMENT RESULTS",
-        lambda: records,
-        columns,
-        empty_message="No payments found.",
-        sort_key=None,
-        width=78
-    )
+        page = 1
+        page_size = 5
+        while True:
+            total_pages = (len(records) + page_size - 1) // page_size
+            header("TRANSACTION RESULTS", input_screen=False, width=78)
+            print(f"{label}: {term}")
+            print(f"Matches: {len(records)} | Page {page} of {total_pages}")
+            print("-" * 78)
+            start = (page - 1) * page_size
+            for transaction in records[start:start + page_size]:
+                print(
+                    f"{transaction['reference']}  "
+                    f"{transaction['created_at'][:16]}  "
+                    f"{format_currency(transaction['amount'])}  "
+                    f"[{transaction['status']}]"
+                )
+                if transaction.get("customer_id") is not None:
+                    print(
+                        f"  Customer: {transaction['customer_name']} "
+                        f"(ID {transaction['customer_id']})"
+                    )
+                else:
+                    print("  Customer: Anonymous")
+                for item_line in wrap_cell(transaction["item_names"], 73):
+                    print(f"  {item_line}")
+                print(f"  Payment: {transaction['payment_method']}")
+                print("-" * 78)
+
+            print(page_nav_options(page, total_pages, include_back=True))
+            print("Enter a receipt/payment reference to view details.")
+            val = input("Reference or choice: ").strip().lower()
+            if val in ("0", "b", "back"):
+                break
+            if val in ("n", "next") and page < total_pages:
+                page += 1
+                continue
+            if val in ("p", "prev", "previous") and page > 1:
+                page -= 1
+                continue
+
+            selected = next(
+                (tx for tx in records if tx["reference"].lower() == val),
+                None,
+            )
+            if selected is None:
+                print("That reference is not in the search results.")
+                pause()
+                continue
+            if selected["record_type"] == "sale":
+                view_sale_details(selected["record_id"])
+                continue
+
+            header("PAYMENT DETAILS", input_screen=False, width=78)
+            print(f"Reference:       {selected['reference']}")
+            print(f"Date:            {selected['created_at']}")
+            print(f"Customer:        {selected['customer_name']}")
+            if selected.get("customer_id") is not None:
+                print(f"Customer ID:     {selected['customer_id']}")
+            print("Items / Services:")
+            for line in wrap_cell(selected["item_names"], 74):
+                print(f"  {line}")
+            print(f"Payment Method:  {selected['payment_method']}")
+            print(f"Amount:          {format_currency(selected['amount'])}")
+            print(f"Status:          {selected['status']}")
+            pause()
 
 
 def search_purchases():
@@ -2963,30 +3032,36 @@ def view_sale_details(sale_id):
             pause()
             return
 
-        header("PURCHASE DETAILS", input_screen=False, width=60)
+        header("PURCHASE DETAILS", input_screen=False, width=64)
         print(f"Receipt No:     {sale['receipt_no']}")
         print(f"Date & Time:    {sale['created_at']}")
-        print(f"Customer:       {sale['customer_name']} ({sale['customer_type']})")
+        if str(sale.get("kind", "")).lower() != "product" or sale.get("customer_id") is not None:
+            print(f"Customer:       {sale['customer_name']} ({sale['customer_type']})")
         print(f"Status:         {sale['status']}")
         if sale["status"] == "Voided":
             print(f"Voided At:      {sale.get('voided_at', '-')}")
             print(f"Void Reason:    {sale.get('void_reason', '-')}")
-        print("-" * 60)
-        print(f"{'Item Name':<30} {'Qty':>4} {'Price':>10} {'Amount':>10}")
-        print("-" * 60)
+        print("-" * 64)
+        print(f"{'Item Name':<30} | {'Qty':>4} | {'Price':>10} | {'Amount':>10}")
+        print("-" * 64)
         for it in sale.get("items", []):
-            print(f"{it['item_name'][:30]:<30} {it['quantity']:>4} {format_currency(it['unit_price']):>10} {format_currency(it['line_amount']):>10}")
-        print("-" * 60)
+            print_table_row(it, [
+                ("Item Name", "item_name", 30),
+                ("Qty", "quantity", 4, "right"),
+                ("Price", lambda row: format_currency(row["unit_price"]), 10, "right"),
+                ("Amount", lambda row: format_currency(row["line_amount"]), 10, "right"),
+            ])
+        print("-" * 64)
         print(f"{'Total:':<46} {format_currency(sale['total']):>10}")
         print(f"Payment Method: {sale['payment_method']}")
         print(f"{'Amount Tendered:':<46} {format_currency(sale['amount_tendered']):>10}")
         print(f"{'Change:':<46} {format_currency(sale['change']):>10}")
-        print("=" * 60)
+        print("=" * 64)
 
         if sale["status"] == "Completed":
             print("[V] Void sale")
             print("[0] Back")
-            print("-" * 60)
+            print("-" * 64)
             choice = input("Choice: ").strip().lower()
             if choice in ("0", "b", "back"):
                 return
@@ -3013,8 +3088,7 @@ def search_records():
     submenu("SEARCH RECORDS", [
         ("Search Customer by Name", search_customer),
         ("Search Customer by ID", search_customer_id),
-        ("Search Membership", search_membership),
-        ("Search Payment", search_payment),
+        ("Search Transactions", search_payment),
         ("Search Purchase", search_purchases)
     ])
 
@@ -3035,7 +3109,7 @@ def display_sales_report(title, period):
 
     page = 1
     total_pages = len(data)
-    width = 60
+    width = 78
 
     while True:
         record = data[page - 1]
@@ -3054,10 +3128,16 @@ def display_sales_report(title, period):
 
         if period == "daily" and record.get("transactions"):
             print("\nTransactions:")
-            print(f"{'Receipt No.':<12} | {'Time':<5} | {'Customer':<20} | {'Total':>8} | {'Status':<9}")
+            print(f"{'Receipt No.':<12} | {'Time':<5} | {'Item Name':<30} | {'Total':>10} | {'Status':<9}")
             print("-" * width)
             for tx in record["transactions"][:10]:
-                print(f"{tx['receipt_no']:<12} | {tx['time']:<5} | {tx['customer'][:20]:<20} | {format_currency(tx['total']):>8} | {tx['status']:<9}")
+                print_table_row(tx, [
+                    ("Receipt No.", "receipt_no", 12),
+                    ("Time", "time", 5),
+                    ("Item Name", "item_name", 30),
+                    ("Total", lambda row: format_currency(row["total"]), 10, "right"),
+                    ("Status", "status", 9),
+                ])
             if len(record["transactions"]) > 10:
                 print(f"... and {len(record['transactions']) - 10} more transactions.")
 
