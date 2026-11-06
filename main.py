@@ -553,6 +553,22 @@ def wrap_cell(value, width):
     ) or ["-"]
 
 
+TABLE_SEPARATOR = "  |  "
+
+
+def table_width(columns, minimum=0):
+    return max(minimum, sum(col[2] for col in columns) + len(TABLE_SEPARATOR) * (len(columns) - 1))
+
+
+def print_table_header(columns):
+    cells = []
+    for col in columns:
+        label, width = col[0], col[2]
+        align = col[3] if len(col) > 3 else "left"
+        cells.append(format_cell(label, width, align))
+    print(TABLE_SEPARATOR.join(cells))
+
+
 def format_cell(value, width, align="left"):
     lines = wrap_cell(value, width)
     first = lines[0]
@@ -577,7 +593,7 @@ def print_table_row(rec, columns):
                 row_cells.append(txt.rjust(w) if align == "right" else txt.ljust(w))
             else:
                 row_cells.append(" " * w)
-        print(" | ".join(row_cells))
+        print(TABLE_SEPARATOR.join(row_cells))
 
 
 def mask_phone(phone: str) -> str:
@@ -610,31 +626,25 @@ def page_nav_options(page, total_pages, include_back=True):
         nav.append("[<] Previous")
     if include_back:
         nav.append("[0] Back")
-    return "   ".join(nav)
+    return "        ".join(nav)
 
 
 def render_data_table(title, records, columns, page, width=None, always_show_back=False, banner=None, footer_text=None, cancel_label=False):
-    if width is None:
-        width = sum(col[2] for col in columns) + 3 * (len(columns) - 1)
+    width = table_width(columns, width or 0)
     total_records = len(records)
     total_pages = (total_records + PAGE_SIZE - 1) // PAGE_SIZE
     start = (page - 1) * PAGE_SIZE
     end = min(start + PAGE_SIZE, total_records)
 
     header(title, input_screen=False, width=width, banner=banner)
-    header_cells = []
-    for col in columns:
-        label, _, w = col[0], col[1], col[2]
-        align = col[3] if len(col) > 3 else "left"
-        header_cells.append(format_cell(label, w, align=align))
-    print(" | ".join(header_cells))
+    print_table_header(columns)
     print("-" * width)
 
     for rec in records[start:end]:
         print_table_row(rec, columns)
 
     print("-" * width)
-    print(f"Page {page} of {total_pages} | Showing {start + 1}-{end} of {total_records}")
+    print(f"Page {page} of {total_pages}    Showing {start + 1}-{end} of {total_records}")
     if footer_text:
         print(footer_text)
     if total_pages > 1 or always_show_back:
