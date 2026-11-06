@@ -1276,7 +1276,13 @@ def view_plan_memberships(plan_name, status="all"):
         for record in records[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]:
             print_table_row(record, columns, compact=True)
         if not records:
-            print("No matching memberships found.")
+            if status == "all":
+                print("No membership records found.")
+            else:
+                all_records = request("GET", "/memberships", params={"status": "all", "plan": plan_name})
+                if all_records is None:
+                    return
+                print("No matching memberships found." if all_records else "No membership records found.")
         print("-" * width)
         controls = "[1] Active        [2] Expired        [3] All"
         if pages > 1:
@@ -2219,8 +2225,15 @@ def select_item_from_table(title, item_type="", name_header="Item Name", empty_m
             pause()
             return None
         if not records:
+            message = empty_message
+            if eligibility:
+                all_items = request("GET", "/products", params={"type": item_type} if item_type else None)
+                if all_items is None:
+                    return None
+                if not all_items:
+                    message = "No product or service records found."
             header(title, input_screen=False, width=width, banner=active_banner)
-            print(f"\n{empty_message}")
+            print(f"\n{message}")
             pause()
             return None
 
