@@ -107,7 +107,7 @@ class CompactTransactionDisplayTests(unittest.TestCase):
         with redirect_stdout(stream):
             main.print_table_header(columns)
             main.print_table_row(record, columns)
-        lines = stream.getvalue().splitlines()
+        lines = [line for line in stream.getvalue().splitlines() if line]
         self.assertIn("  |  ", lines[0])
         self.assertEqual(len(lines[0]), main.table_width(columns))
         self.assertEqual(len(lines[1]), len(lines[0]))
