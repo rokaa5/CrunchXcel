@@ -605,9 +605,9 @@ def format_phone_display(phone):
 def page_nav_options(page, total_pages, include_back=True):
     nav = []
     if page < total_pages:
-        nav.append("[N] Next")
+        nav.append("[>] Next")
     if page > 1:
-        nav.append("[P] Previous")
+        nav.append("[<] Previous")
     if include_back:
         nav.append("[0] Back")
     return "   ".join(nav)
@@ -641,9 +641,9 @@ def render_data_table(title, records, columns, page, width=None, always_show_bac
         if cancel_label:
             nav = []
             if page < total_pages:
-                nav.append("[N] Next")
+                nav.append("[>] Next")
             if page > 1:
-                nav.append("[P] Previous")
+                nav.append("[<] Previous")
             nav.append("[0] Cancel")
             print("   ".join(nav))
         else:
@@ -699,10 +699,10 @@ def select_customer_from_list(title, empty_action, eligibility=None, empty_messa
             low = value.lower()
             if low in ("0", "b", "back"):
                 raise GoBack()
-            if low in ("n", "next") and page < total_pages:
+            if low in (">", "n", "next") and page < total_pages:
                 page += 1
                 break
-            if low in ("p", "prev", "previous") and page > 1:
+            if low in ("<", "p", "prev", "previous") and page > 1:
                 page -= 1
                 break
             if value == "":
@@ -768,19 +768,19 @@ def paginated_view(title, fetch_fn, columns, empty_message, sort_key="id", width
             choice = input("Enter choice: ").strip().lower()
             if choice in ("0", "b", "back"):
                 raise GoBack()
-            if choice in ("n", "next") and page < total_pages:
+            if choice in (">", "n", "next") and page < total_pages:
                 page += 1
                 break
-            if choice in ("p", "prev", "previous") and page > 1:
+            if choice in ("<", "p", "prev", "previous") and page > 1:
                 page -= 1
                 break
 
             if page < total_pages and page > 1:
-                print("Invalid choice. Enter N, P, or 0.")
+                print("Invalid choice. Enter >, <, or 0.")
             elif page < total_pages:
-                print("Invalid choice. Enter N or 0.")
+                print("Invalid choice. Enter > or 0.")
             else:
-                print("Invalid choice. Enter P or 0.")
+                print("Invalid choice. Enter < or 0.")
 
 
 def render_view_customers_table(customers, page):
@@ -822,19 +822,19 @@ def view_customers():
             choice = input("Enter choice: ").strip().lower()
             if choice in ("0", "b", "back"):
                 raise GoBack()
-            if choice in ("n", "next") and page < total_pages:
+            if choice in (">", "n", "next") and page < total_pages:
                 page += 1
                 break
-            if choice in ("p", "prev", "previous") and page > 1:
+            if choice in ("<", "p", "prev", "previous") and page > 1:
                 page -= 1
                 break
 
             if page < total_pages and page > 1:
-                print("Invalid choice. Enter N, P, or 0.")
+                print("Invalid choice. Enter >, <, or 0.")
             elif page < total_pages:
-                print("Invalid choice. Enter N or 0.")
+                print("Invalid choice. Enter > or 0.")
             else:
-                print("Invalid choice. Enter P or 0.")
+                print("Invalid choice. Enter < or 0.")
 
 
 def update_customer():
@@ -1024,9 +1024,9 @@ def customer_overview():
         print("-" * width)
         nav = [f"Page {page} of {total_pages}"]
         if page < total_pages:
-            nav.append("[N] Next")
+            nav.append("[>] Next")
         if page > 1:
-            nav.append("[P] Prev")
+            nav.append("[<] Prev")
         nav.append("[S] Search")
         nav.append("[0] Back")
         print(" | ".join(nav))
@@ -1036,10 +1036,10 @@ def customer_overview():
 
         if low in ("0", "b", "back"):
             return
-        if low in ("n", "next") and page < total_pages:
+        if low in (">", "n", "next") and page < total_pages:
             page += 1
             continue
-        if low in ("p", "prev", "previous") and page > 1:
+        if low in ("<", "p", "prev", "previous") and page > 1:
             page -= 1
             continue
         if low in ("s", "search"):
@@ -1971,10 +1971,10 @@ def select_item_from_table(title, item_type="", name_header="Item Name", empty_m
             low = val.lower()
             if low in ("0", "b", "back"):
                 raise GoBack()
-            if low in ("n", "next") and page < total_pages:
+            if low in (">", "n", "next") and page < total_pages:
                 page += 1
                 break
-            if low in ("p", "prev", "previous") and page > 1:
+            if low in ("<", "p", "prev", "previous") and page > 1:
                 page -= 1
                 break
             if val == "":
@@ -2254,9 +2254,9 @@ def pick_purchase_items(customer_id, customer_name, membership_label, cart):
         print("-" * width)
         nav = [f"Page {page} of {total_pages}"]
         if page < total_pages:
-            nav.append("[N] Next")
+            nav.append("[>] Next")
         if page > 1:
-            nav.append("[P] Previous")
+            nav.append("[<] Previous")
         nav.append("[0] Done")
         print(" | ".join(nav))
 
@@ -2264,10 +2264,10 @@ def pick_purchase_items(customer_id, customer_name, membership_label, cart):
         low = val.lower()
         if low in ("0", "done", "d", "b", "back"):
             return
-        if low in ("n", "next") and page < total_pages:
+        if low in (">", "n", "next") and page < total_pages:
             page += 1
             continue
-        if low in ("p", "prev", "previous") and page > 1:
+        if low in ("<", "p", "prev", "previous") and page > 1:
             page -= 1
             continue
         if val == "":
@@ -2465,18 +2465,18 @@ def identify_trainer_customer():
                 print("-" * 76)
                 print(f"Page {page + 1} of {total_pages}")
                 if page + 1 < total_pages:
-                    print("[N] Next")
+                    print("[>] Next")
                 if page > 0:
-                    print("[P] Previous")
+                    print("[<] Previous")
                 print("[R] Register a different person with this name")
                 print("[0] Back")
                 pick = input("Customer ID or choice: ").strip().lower()
                 if pick in ("0", "b", "back"):
                     return None
-                if pick in ("n", "next") and page + 1 < total_pages:
+                if pick in (">", "n", "next") and page + 1 < total_pages:
                     page += 1
                     continue
-                if pick in ("p", "previous") and page > 0:
+                if pick in ("<", "p", "previous") and page > 0:
                     page -= 1
                     continue
                 if pick in ("r", "register"):
@@ -2959,14 +2959,14 @@ def search_transactions_ui():
             selected_category, category_name = filters[normalized]
             page = 1
             continue
-        if normalized in ("n", "next"):
+        if normalized in (">", "n", "next"):
             if page < total_pages:
                 page += 1
             else:
                 print("Already on the last page.")
                 pause()
             continue
-        if normalized in ("p", "prev", "previous"):
+        if normalized in ("<", "p", "prev", "previous"):
             if page > 1:
                 page -= 1
             else:
@@ -3118,9 +3118,9 @@ def display_sales_report(title, period):
         print("-" * width)
         nav = [f"Period {page} of {total_pages}"]
         if page < total_pages:
-            nav.append("[N] Next")
+            nav.append("[>>] Next period")
         if page > 1:
-            nav.append("[P] Previous")
+            nav.append("[<<] Previous period")
         nav.append("[0] Back")
         print(" | ".join(nav))
         if tx_total_pages > 1:
@@ -3140,11 +3140,11 @@ def display_sales_report(title, period):
         if choice == "<" and transaction_page > 1:
             transaction_page -= 1
             continue
-        if choice in ("n", "next") and page < total_pages:
+        if choice in (">>", "n", "next") and page < total_pages:
             page += 1
             transaction_page = 1
             continue
-        if choice in ("p", "prev", "previous") and page > 1:
+        if choice in ("<<", "p", "prev", "previous") and page > 1:
             page -= 1
             transaction_page = 1
             continue
