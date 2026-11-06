@@ -3559,15 +3559,26 @@ def login_screen():
     global AUTH_TOKEN, CURRENT_ROLE
     while True:
         header("CRUNCH X FITNESS - LOGIN")
-        print("Username:")
-        print("Password:")
-        print("-" * 55)
-        print("[0] Exit")
-        print("-" * 55)
-        username = input("Enter username: ").strip()
-        if username == "0":
-            return False
-        password = input("Enter password: ")
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            print("Username:")
+            print("Password:")
+            print("-" * 55)
+            print("[0] Exit")
+            print("-" * 55)
+            # Return to the username line; the exit option remains visible below.
+            print("\x1b[5A\x1b[10C", end="", flush=True)
+            username = input().strip()
+            if username == "0":
+                return False
+            print("\x1b[10C", end="", flush=True)
+            password = input()
+        else:
+            print("[0] Exit")
+            print("-" * 55)
+            username = input("Username: ").strip()
+            if username == "0":
+                return False
+            password = input("Password: ")
         if password == "0":
             return False
         try:
