@@ -2161,26 +2161,28 @@ def manage_purchase_cart(customer_id, customer_name, membership_label, cart):
         discount_str = quote_res.get("discount", "0.00")
         total_str = quote_res.get("total", "0.00")
 
-        header("PURCHASE CART", input_screen=False, width=64)
-        print("-" * 64)
-        print(f"{'No':<3} | {'Item Name':<22} | {'Qty':>3} | {'Unit':>8} | {'Disc':>7} | {'Total':>8}")
-        print("-" * 64)
+        cart_columns = [
+            ("No", "number", 3), ("Item Name", "name", 28),
+            ("Qty", "qty", 4, "right"), ("Unit", "unit", 10, "right"),
+            ("Disc", "discount", 9, "right"), ("Total", "total", 10, "right"),
+        ]
+        cart_width = table_width(cart_columns, 92)
+        header("PURCHASE CART", input_screen=False, width=cart_width)
+        print("-" * cart_width)
+        print_table_header(cart_columns)
+        print("-" * cart_width)
 
         for idx, it in enumerate(items, 1):
             print_table_row({
                 "number": idx, "name": it["name"], "qty": it["quantity"],
                 "unit": it["unit_price"], "discount": it["discount"],
                 "total": it["total"],
-            }, [
-                ("No", "number", 3), ("Item Name", "name", 22),
-                ("Qty", "qty", 3, "right"), ("Unit", "unit", 8, "right"),
-                ("Disc", "discount", 7, "right"), ("Total", "total", 8, "right"),
-            ])
-        print("-" * 64)
-        print(f"{'Subtotal:':<54} {format_currency(subtotal_str):>9}")
-        print(f"{'Discount:':<54} {format_currency(discount_str):>9}")
-        print(f"{'Total Due:':<54} {format_currency(total_str):>9}")
-        print("-" * 64)
+            }, cart_columns)
+        print("-" * cart_width)
+        print(f"{'Subtotal:':<78} {format_currency(subtotal_str):>12}")
+        print(f"{'Discount:':<78} {format_currency(discount_str):>12}")
+        print(f"{'Total Due:':<78} {format_currency(total_str):>12}")
+        print("-" * cart_width)
         print("[A] Add item  [R] Remove line  [C] Checkout  [0] Cancel sale")
         choice = input("Enter choice: ").strip().lower()
 
@@ -2245,21 +2247,22 @@ def pick_purchase_items(customer_id, customer_name, membership_label, cart):
 
     page = 1
     total_pages = (len(eligible_items) + PAGE_SIZE - 1) // PAGE_SIZE
-    width = 62
+    item_columns = [
+        ("ID", "id", 4), ("Item Name", "name", 40),
+        ("Category", "category", 14),
+        ("Price", lambda item: format_currency(item["price"]), 12, "right"),
+    ]
+    width = table_width(item_columns, 90)
 
     while True:
         header("SELECT ITEM", input_screen=False, width=width)
-        print(f"{'ID':<4} | {'Item Name':<30} | {'Category':<12} | {'Price':>8}")
+        print_table_header(item_columns)
         print("-" * width)
 
         start = (page - 1) * PAGE_SIZE
         end = min(start + PAGE_SIZE, len(eligible_items))
         for p in eligible_items[start:end]:
-            print_table_row(p, [
-                ("ID", "id", 4), ("Item Name", "name", 30),
-                ("Category", "category", 12),
-                ("Price", lambda item: format_currency(item["price"]), 8, "right"),
-            ])
+            print_table_row(p, item_columns)
 
         print("-" * width)
         nav = [f"Page {page} of {total_pages}"]
@@ -3012,7 +3015,14 @@ def view_sale_details(sale_id):
             pause()
             return
 
-        header("PURCHASE DETAILS", input_screen=False, width=64)
+        detail_columns = [
+            ("Item Name", "item_name", 40),
+            ("Qty", "quantity", 4, "right"),
+            ("Price", lambda row: format_currency(row["unit_price"]), 12, "right"),
+            ("Amount", lambda row: format_currency(row["line_amount"]), 12, "right"),
+        ]
+        detail_width = table_width(detail_columns, 86)
+        header("PURCHASE DETAILS", input_screen=False, width=detail_width)
         print(f"Receipt No:     {sale['receipt_no']}")
         print(f"Date & Time:    {sale['created_at']}")
         if str(sale.get("kind", "")).lower() != "product" or sale.get("customer_id") is not None:
@@ -3021,27 +3031,22 @@ def view_sale_details(sale_id):
         if sale["status"] == "Voided":
             print(f"Voided At:      {sale.get('voided_at', '-')}")
             print(f"Void Reason:    {sale.get('void_reason', '-')}")
-        print("-" * 64)
-        print(f"{'Item Name':<30} | {'Qty':>4} | {'Price':>10} | {'Amount':>10}")
-        print("-" * 64)
+        print("-" * detail_width)
+        print_table_header(detail_columns)
+        print("-" * detail_width)
         for it in sale.get("items", []):
-            print_table_row(it, [
-                ("Item Name", "item_name", 30),
-                ("Qty", "quantity", 4, "right"),
-                ("Price", lambda row: format_currency(row["unit_price"]), 10, "right"),
-                ("Amount", lambda row: format_currency(row["line_amount"]), 10, "right"),
-            ])
-        print("-" * 64)
+            print_table_row(it, detail_columns)
+        print("-" * detail_width)
         print(f"{'Total:':<46} {format_currency(sale['total']):>10}")
         print(f"Payment Method: {sale['payment_method']}")
         print(f"{'Amount Tendered:':<46} {format_currency(sale['amount_tendered']):>10}")
         print(f"{'Change:':<46} {format_currency(sale['change']):>10}")
-        print("=" * 64)
+        print("=" * detail_width)
 
         if sale["status"] == "Completed":
             print("[V] Void sale")
             print("[0] Back")
-            print("-" * 64)
+            print("-" * detail_width)
             choice = input("Choice: ").strip().lower()
             if choice in ("0", "b", "back"):
                 return
