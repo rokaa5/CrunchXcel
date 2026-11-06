@@ -1,5 +1,11 @@
 import calendar
 import re
+import secrets
+import hmac
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from auth_utils import verify_password
 
 def add_one_year(start_dt: date) -> date:
     try:
@@ -50,6 +56,51 @@ async def lifespan(app):
 
 
 app = FastAPI(title="Gym Management API", lifespan=lifespan)
+
+# Sessions are valid for the current API process only; restart revokes all tokens.
+SESSIONS = {}
+STAFF_POST_PATHS = {
+    "/customers", "/memberships", "/memberships/renew",
+    "/payments", "/purchases", "/quotes", "/daily-sessions",
+    "/sales", "/trainer-sessions",
+}
+
+class LoginCredentials(BaseModel):
+    username: str
+    password: str
+
+@app.post("/auth/login")
+def login(credentials: LoginCredentials):
+    with connect() as db:
+        user = db.execute(
+            "SELECT username, password_hash, role FROM app_users WHERE username = ?",
+            (credentials.username.strip(),)
+        ).fetchone()
+        if not user or not verify_password(credentials.password, user["password_hash"]):
+            raise HTTPException(401, "Invalid username or password.")
+        token = secrets.token_urlsafe(32)
+        SESSIONS[token] = user["role"]
+        return {"token": token, "role": user["role"]}
+
+@app.middleware("http")
+async def enforce_permissions(request: Request, call_next):
+    if request.url.path == "/auth/login":
+        return await call_next(request)
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    role = SESSIONS.get(token) if scheme.lower() == "bearer" else None
+    if not role:
+        return JSONResponse(status_code=401, content={"detail": "Login required."})
+    if request.url.path == "/auth/logout" and request.method == "POST":
+        SESSIONS.pop(token, None)
+        return JSONResponse({"logged_out": True})
+    if role == "staff":
+        method = request.method.upper()
+        if method not in ("GET", "HEAD", "OPTIONS"):
+            if method != "POST" or request.url.path not in STAFF_POST_PATHS:
+                return JSONResponse(status_code=403, content={"detail": "Admin access required."})
+    return await call_next(request)
+
 
 
 def rows(cursor):
