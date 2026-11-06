@@ -2484,15 +2484,21 @@ def identify_trainer_customer():
             page = 0
             while True:
                 total_pages = (len(matches) + PAGE_SIZE - 1) // PAGE_SIZE
-                header("MATCHING CUSTOMERS", input_screen=False, width=76)
+                columns = [
+                    ("ID", "id", 5),
+                    ("Customer", lambda row: f"{row['first_name']} {row['last_name']}", 30),
+                    ("Phone", lambda row: mask_phone(row.get("phone", "")), 14),
+                    ("Yearly", lambda row: row.get("yearly_status") or "None", 12),
+                ]
+                width = table_width(columns, 85)
+                header("MATCHING CUSTOMERS", input_screen=False, width=width)
                 print(f"Multiple customers are named {full_name}. Select the correct ID.")
-                print("-" * 76)
-                print(f"{'ID':<5} | {'Customer':<25} | {'Phone':<13} | {'Yearly':<12}")
-                print("-" * 76)
+                print("-" * width)
+                print_table_header(columns)
+                print("-" * width)
                 for cust in matches[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]:
-                    name = f"{cust['first_name']} {cust['last_name']}"[:25]
-                    print(f"{cust['id']:<5} | {name:<25} | {mask_phone(cust.get('phone', '')):<13} | {cust.get('yearly_status', 'None'):<12}")
-                print("-" * 76)
+                    print_table_row(cust, columns)
+                print("-" * width)
                 print(f"Page {page + 1} of {total_pages}")
                 if page + 1 < total_pages:
                     print("[>] Next")
@@ -3112,20 +3118,29 @@ def display_sales_report(title, period):
     transaction_page = 1
     transaction_page_size = 8
     total_pages = len(data)
-    width = 78
+    width = 102
 
     while True:
         record = data[page - 1]
         header(title, input_screen=False, width=width)
         period_label = "Date" if period == "daily" else "Month"
         print(f"{period_label}: {record['period']}")
+        category_columns = [
+            ("Category", "category", 26),
+            ("Transactions", "transactions", 16, "right"),
+            ("Amount", lambda row: format_currency(row["amount"]), 18, "right"),
+        ]
         print("-" * width)
-        print(f"{'Category':<16} | {'Transactions':>12} | {'Amount':>16}")
+        print_table_header(category_columns)
         print("-" * width)
         for cat in record.get("categories", []):
-            print(f"{cat['category']:<16} | {cat['transactions']:>12} | {format_currency(cat['amount']):>16}")
+            print_table_row(cat, category_columns)
         print("-" * width)
-        print(f"{'Total sales':<16} | {record['total_transactions']:>12} | {format_currency(record['total_sales']):>16}")
+        print_table_row({
+            "category": "Total sales",
+            "transactions": record["total_transactions"],
+            "amount": record["total_sales"],
+        }, category_columns)
         print("-" * width)
         print(f"Voided sales excluded: {record.get('voided_count', 0)}")
 
@@ -3135,33 +3150,39 @@ def display_sales_report(title, period):
             tx_total_pages = max(1, (len(transactions) + transaction_page_size - 1) // transaction_page_size)
             transaction_page = min(transaction_page, tx_total_pages)
             begin_index = (transaction_page - 1) * transaction_page_size
-            print(f"\nTransactions: Page {transaction_page} of {tx_total_pages}")
-            print(f"{'Receipt No.':<12} | {'Time':<5} | {'Item Name':<30} | {'Total':>10} | {'Status':<9}")
+            transaction_columns = [
+                ("Receipt No.", "receipt_no", 12),
+                ("Time", "time", 8),
+                ("Item Name", "item_name", 40),
+                ("Total", lambda row: format_currency(row["total"]), 13, "right"),
+                ("Status", "status", 10),
+            ]
+            print(f"\nTransactions: Page {transaction_page} of {tx_total_pages}\n")
+            print_table_header(transaction_columns)
             print("-" * width)
             for tx in transactions[begin_index:begin_index + transaction_page_size]:
-                print_table_row(tx, [
-                    ("Receipt No.", "receipt_no", 12),
-                    ("Time", "time", 5),
-                    ("Item Name", "item_name", 30),
-                    ("Total", lambda row: format_currency(row["total"]), 10, "right"),
-                    ("Status", "status", 9),
-                ])
+                print_table_row(tx, transaction_columns)
 
         print("-" * width)
-        nav = [f"Period {page} of {total_pages}"]
-        if page < total_pages:
-            nav.append("[>>] Next period")
+        print(f"REPORT PERIOD   Page {page} of {total_pages}")
+        period_nav = []
         if page > 1:
-            nav.append("[<<] Previous period")
-        nav.append("[0] Back")
-        print(" | ".join(nav))
+            period_nav.append("[<<] Previous period")
+        if page < total_pages:
+            period_nav.append("[>>] Next period")
+        period_nav.append("[0] Back")
+        print("        ".join(period_nav))
+
         if tx_total_pages > 1:
+            print()
+            print(f"TRANSACTIONS    Page {transaction_page} of {tx_total_pages}")
             tx_nav = []
-            if transaction_page < tx_total_pages:
-                tx_nav.append("[>] Next transaction page")
             if transaction_page > 1:
-                tx_nav.append("[<] Previous transaction page")
-            print(" | ".join(tx_nav))
+                tx_nav.append("[<] Previous page")
+            if transaction_page < tx_total_pages:
+                tx_nav.append("[>] Next page")
+            print("        ".join(tx_nav))
+        print()
 
         choice = input("Choice: ").strip().lower()
         if choice in ("0", "b", "back"):
