@@ -33,7 +33,7 @@ from models import (
     PurchaseItem,
     SaleCreate,
     SaleLineItemCreate,
-    SaleVoid,
+    RefundCreate,
     Trainer,
     TrainerSessionCreate,
     DailySessionCreate,
@@ -1506,11 +1506,45 @@ def next_receipt_no(db):
     return f"R-{last_id + 1:06d}"
 
 
+def refund_row_for_sale(db, sale_id):
+    return db.execute(
+        "SELECT * FROM refunds WHERE sale_id = ?", (sale_id,)
+    ).fetchone()
+
+
+def display_sale_status(db, sale_id, stored_status):
+    return "Refunded" if stored_status == "Completed" and refund_row_for_sale(db, sale_id) else stored_status
+
+
+def format_refund(db, refund_id):
+    refund = db.execute("""
+        SELECT r.*, s.receipt_no, s.customer_id, s.customer_name,
+               s.payment_method AS original_payment_method, s.kind
+        FROM refunds r JOIN sales s ON s.id = r.sale_id
+        WHERE r.id = ?
+    """, (refund_id,)).fetchone()
+    if refund is None:
+        raise HTTPException(404, "Refund record not found.")
+    record = dict(refund)
+    record["refund_no"] = f"REF-{record['id']:06d}"
+    record["amount"] = money(record.pop("amount_cents"))
+    return record
+
+
 def get_sale_formatted(db, sale_id: int):
     sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
     if not sale:
         raise HTTPException(404, f"There is no sale record with ID {sale_id} right now.")
     sale = dict(sale)
+    refund = refund_row_for_sale(db, sale_id)
+    if refund is not None and sale["status"] == "Completed":
+        sale["status"] = "Refunded"
+        sale["refund_id"] = refund["id"]
+        sale["refund_no"] = f"REF-{refund['id']:06d}"
+        sale["refunded_at"] = refund["created_at"]
+        sale["refund_reason"] = refund["reason"]
+        sale["refund_method"] = refund["method"]
+        sale["refunded_amount"] = money(refund["amount_cents"])
     items = rows(db.execute("SELECT * FROM sale_items WHERE sale_id=?", (sale_id,)))
     sale["total"] = money(sale.pop("total_cents"))
     sale["amount_tendered"] = money(sale.pop("amount_tendered_cents"))
@@ -1730,35 +1764,62 @@ def get_sale(sale_id: int):
         return get_sale_formatted(db, sale_id)
 
 
-@app.post("/sales/{sale_id}/void")
-def void_sale_endpoint(sale_id: int, data: SaleVoid):
-    reason = data.reason.strip()
-    if not reason:
-        raise HTTPException(422, "Void reason is required")
+@app.get("/refunds")
+def list_refunds():
     with connect() as db:
-        sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
-        if not sale:
-            raise HTTPException(404, f"There is no sale record with ID {sale_id} right now.")
-        if sale["status"] == "Voided":
-            raise HTTPException(422, "Sale is already voided")
-        db.execute(
-            "UPDATE sales SET status='Voided', void_reason=?, voided_at=datetime('now', 'localtime') WHERE id=?",
-            (reason, sale_id)
-        )
-        updated = dict(db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone())
-        items = rows(db.execute("SELECT * FROM sale_items WHERE sale_id=?", (sale_id,)))
-        updated["total"] = money(updated.pop("total_cents"))
-        updated["amount_tendered"] = money(updated.pop("amount_tendered_cents"))
-        updated["change"] = money(updated.pop("change_cents"))
-        for it in items:
-            it["unit_price"] = money(it.pop("unit_price_cents"))
-            it["line_amount"] = money(it.pop("line_amount_cents"))
-        updated["items"] = items
-        ts_row = db.execute("SELECT trainer_name, session_date_time FROM trainer_sessions WHERE sale_id=?", (sale_id,)).fetchone()
-        if ts_row:
-            updated["trainer_name"] = ts_row["trainer_name"]
-            updated["session_date_time"] = ts_row["session_date_time"]
-        return updated
+        ids = [
+            row[0] for row in db.execute(
+                "SELECT id FROM refunds ORDER BY created_at DESC, id DESC"
+            ).fetchall()
+        ]
+        return [format_refund(db, refund_id) for refund_id in ids]
+
+
+@app.get("/refunds/{refund_id}")
+def get_refund(refund_id: int):
+    with connect() as db:
+        return format_refund(db, refund_id)
+
+
+@app.post("/sales/{sale_id}/refund", status_code=201)
+def refund_sale(sale_id: int, data: RefundCreate):
+    """Record a full manual refund; never initiate external cash or e-wallet transfers."""
+    reason = data.reason.strip()
+    if len(reason) < 3:
+        raise HTTPException(422, "Provide a reason of at least 3 characters.")
+
+    with connect() as db:
+        sale = db.execute("SELECT * FROM sales WHERE id = ?", (sale_id,)).fetchone()
+        if sale is None:
+            raise HTTPException(404, "Sale not found.")
+        previous = refund_row_for_sale(db, sale_id)
+        if previous is not None:
+            raise HTTPException(409, f"Sale was already refunded ({format_refund(db, previous['id'])['refund_no']}).")
+        if sale["status"] != "Completed":
+            raise HTTPException(409, "Only completed, unrefunded sales can be refunded.")
+        amount = sale["total_cents"]
+        if amount <= 0:
+            raise HTTPException(422, "Sale has no refundable amount.")
+
+        now = ph_now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor = db.execute("""
+            INSERT INTO refunds (sale_id, amount_cents, method, reason, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (sale_id, amount, data.refund_method, reason, now))
+
+        if str(sale["kind"]).lower() == "membership":
+            db.execute(
+                "UPDATE memberships SET cancelled_at = ? WHERE sale_id = ? AND cancelled_at IS NULL",
+                (now, sale_id),
+            )
+        elif str(sale["kind"]).lower() == "trainer":
+            db.execute(
+                "UPDATE trainer_sessions SET cancelled_at = ? WHERE sale_id = ? AND cancelled_at IS NULL",
+                (now, sale_id),
+            )
+
+        # Visits remain in the attendance audit log, even when a daily pass is refunded.
+        return format_refund(db, cursor.lastrowid)
 
 
 # TRAINERS & TRAINER SESSIONS
