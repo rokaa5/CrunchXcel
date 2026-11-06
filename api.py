@@ -373,6 +373,7 @@ def enrich_customers(db, records):
 
         # An active yearly membership qualifies for member-specific rates.
         record["is_active_yearly"] = (y_status == "Active")
+        record["is_non_yearly"] = (y_status != "Active")
 
         has_payments = bool(db.execute(
             "SELECT 1 FROM payments WHERE customer_id = ? LIMIT 1",
@@ -435,6 +436,7 @@ def list_customers(first_name: str = "", last_name: str = "", search: str = "", 
             "renew_yearly": "can_renew_yearly",
             "renew_monthly": "can_renew_monthly",
             "active_yearly": "is_active_yearly",
+            "non_yearly": "is_non_yearly",
             "delete": "can_delete",
         }
         if eligibility in filter_map:
@@ -462,6 +464,7 @@ def check_customers_exist(eligibility: str = ""):
                 "renew_yearly": "can_renew_yearly",
                 "renew_monthly": "can_renew_monthly",
                 "active_yearly": "is_active_yearly",
+            "non_yearly": "is_non_yearly",
                 "delete": "can_delete",
             }
             if eligibility in filter_map:
