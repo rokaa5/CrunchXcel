@@ -1737,6 +1737,175 @@ def daily_session_flow():
             return
 
 
+def refund_purchase_session():
+    """Issue a full refund against an existing sale; keep the original receipt for audit."""
+    page = 1
+    query = ""
+    page_size = 7
+    width = 100
+    columns = [
+        ("Receipt No.", "reference", 12),
+        ("Product / Service", "item_names", 43),
+        ("Amount", lambda row: format_currency(row["amount"]), 13, "right"),
+        ("Status", "status", 10),
+    ]
+
+    while True:
+        params = {"query": query} if query else None
+        records = request("GET", "/transactions/search", params=params)
+        if records is None:
+            pause()
+            return
+        eligible = [
+            record for record in records
+            if record["record_type"] == "sale" and record["status"] == "Completed"
+        ]
+        total_pages = max(1, (len(eligible) + page_size - 1) // page_size)
+        page = min(page, total_pages)
+        visible = eligible[(page - 1) * page_size:page * page_size]
+
+        header("REFUND PURCHASE / SESSION", input_screen=False, width=width)
+        print("Only completed, unrefunded receipts can be refunded.")
+        print("A full refund is recorded in the database; money must be returned manually.")
+        if query:
+            print(f"Search filter: {query}")
+        print(f"Eligible sales: {len(eligible)}   |   Page {page} of {total_pages}")
+        print("-" * width)
+        print_table_header(columns)
+        print("-" * width)
+        if eligible:
+            for transaction in visible:
+                print_table_row(transaction, columns)
+        else:
+            print("No eligible sales found.")
+        print("-" * width)
+        print("[S] Search by customer, item, or receipt")
+        print("[>] Next page     [<] Previous page     [C] Clear search")
+        print("[0] Back")
+        print()
+        choice = input("Receipt number or choice: ").strip()
+        lower = choice.casefold()
+        if lower in ("0", "b", "back"):
+            if query:
+                query = ""
+                page = 1
+                continue
+            return
+        if lower in (">", "n", "next"):
+            if page < total_pages:
+                page += 1
+            continue
+        if lower in ("<", "p", "prev", "previous"):
+            if page > 1:
+                page -= 1
+            continue
+        if lower in ("c", "clear"):
+            query = ""
+            page = 1
+            continue
+        if lower in ("s", "search"):
+            query = input("Search customer, item, or receipt [0 to cancel]: ").strip()
+            if query == "0":
+                query = ""
+            page = 1
+            continue
+
+        selected = next(
+            (r for r in eligible if r["reference"].casefold() == lower),
+            None,
+        )
+        if not selected:
+            print("Enter an eligible receipt number from the list.")
+            pause()
+            continue
+
+        sale = request("GET", f"/sales/{selected['record_id']}")
+        if not sale:
+            pause()
+            continue
+
+        header("CONFIRM REFUND DETAILS", input_screen=False, width=width)
+        print(f"Original Receipt:  {sale['receipt_no']}")
+        print(f"Customer:          {sale['customer_name']}")
+        print(f"Original Payment:  {sale['payment_method']}")
+        print(f"Refund Amount:     {format_currency(sale['total'])}")
+        print("Purchased items:")
+        for item in sale.get("items", []):
+            for line in wrap_cell(f"  {item['quantity']} x {item['item_name']}", width - 2):
+                print(line)
+        print("-" * width)
+        print("This refunds the entire receipt, not individual items.")
+        if str(sale.get("kind", "")).lower() == "membership":
+            print("The purchased membership/session will be cancelled.")
+        if str(sale.get("kind", "")).lower() == "trainer":
+            print("The corresponding trainer appointment will be cancelled.")
+        print("Attendance records remain as historical records.")
+        print("This does NOT send money automatically to a payment provider.")
+        print("-" * width)
+
+        try:
+            reason = ask("Reason for refund [0 to cancel]: ")
+            if len(reason.strip()) < 3:
+                print("Reason must have at least 3 characters.")
+                pause()
+                continue
+            method = ask_payment_method()
+        except GoBack:
+            continue
+
+        print(f"Refund method:  {method}")
+        print(f"Refund amount:  {format_currency(sale['total'])}")
+        if not confirm("Record this full refund? (Y/N, 0 to cancel): "):
+            continue
+        result = request("POST", f"/sales/{selected['record_id']}/refund", {
+            "reason": reason,
+            "refund_method": method,
+        })
+        if not result:
+            pause()
+            continue
+        header("REFUND RECORDED", input_screen=False, width=width)
+        print(f"Refund No.:       {result['refund_no']}")
+        print(f"Original Receipt: {result['receipt_no']}")
+        print(f"Amount:           {format_currency(result['amount'])}")
+        print(f"Method:           {result['method']}")
+        print(f"Reason:           {result['reason']}")
+        print(f"Date:             {result['created_at']}")
+        print("-" * width)
+        print("Give the refund to the customer using the selected method.")
+        print("The system records this action but does not transfer funds.")
+        pause()
+        page = 1
+        query = ""
+
+
+def refund_history():
+    refunds = request("GET", "/refunds")
+    if refunds is None:
+        pause()
+        return
+    if not refunds:
+        header("REFUND HISTORY", input_screen=False)
+        print("No refunds have been recorded.")
+        pause()
+        return
+
+    paginated_view(
+        "REFUND HISTORY",
+        lambda: refunds,
+        [
+            ("Refund No.", "refund_no", 12),
+            ("Original Receipt", "receipt_no", 16),
+            ("Date", lambda row: row["created_at"][:16], 16),
+            ("Amount", lambda row: format_currency(row["amount"]), 12, "right"),
+            ("Method", "method", 10),
+        ],
+        empty_message="No refunds have been recorded.",
+        sort_key=None,
+        width=92,
+    )
+
+
 def product_service_management():
     submenu("PRODUCT/SERVICE MANAGEMENT", [
         ("Yearly Membership", yearly_membership_menu),
@@ -1744,6 +1913,8 @@ def product_service_management():
         ("Daily Session", daily_session_flow),
         ("Services/Products", services_products_menu),
         ("Customer Overview", customer_overview),
+        ("Refund Purchase / Session", refund_purchase_session),
+        ("Refund History", refund_history),
     ])
 
 
