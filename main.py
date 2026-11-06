@@ -2929,7 +2929,8 @@ def search_transactions_ui():
     query = ""
     page = 1
     page_size = 5
-    width = 78
+    width = 98
+    history = []  # Previous category/search states; [0] returns one step at a time.
 
     while True:
         params = {"query": query} if query else None
@@ -2950,50 +2951,66 @@ def search_transactions_ui():
         visible = transactions[(page - 1) * page_size:page * page_size]
 
         header("SEARCH TRANSACTIONS", input_screen=False, width=width)
-        print(f"Category: {category_name} | {total} records | Page {page} of {total_pages}")
+        print(f"Category: {category_name}")
+        print(f"Records: {total}                    Page: {page} of {total_pages}")
         if query:
             for line in wrap_cell(f"Search: {query}", width):
                 print(line)
+        print()
         print("-" * width)
 
         if not visible:
             print("No transactions found for this category or search.")
         for transaction in visible:
             receipt = str(transaction["reference"])
-            name_lines = wrap_cell(transaction.get("item_names") or "Transaction", 43)
+            name_lines = wrap_cell(transaction.get("item_names") or "Transaction", 58)
             amount = format_currency(transaction["amount"])
 
-            print(f"{receipt:<12} {name_lines[0]:<43} {amount:>14}")
+            print(f"{receipt:<13}  {name_lines[0]:<58}  {amount:>14}")
             for continuation in name_lines[1:]:
-                print(f"{'':12} {continuation}")
+                print(f"{'':15}{continuation}")
 
             categories = transaction.get("categories", [])
             category_text = ", ".join(labels.get(cat, "Other") for cat in categories) or "Other"
             created = str(transaction["created_at"])[:16]
-            metadata = f"{created} | {category_text} | {transaction['status']}"
-            if transaction.get("customer_id") is not None:
-                metadata += (
-                    f" | {transaction['customer_name']} "
-                    f"(ID {transaction['customer_id']})"
-                )
+            metadata = f"Date: {created}     Category: {category_text}     Status: {transaction['status']}"
             for line in wrap_cell(metadata, width - 2):
                 print(f"  {line}")
+            if transaction.get("customer_id") is not None:
+                for line in wrap_cell(
+                    f"Customer: {transaction['customer_name']} (ID {transaction['customer_id']})",
+                    width - 2,
+                ):
+                    print(f"  {line}")
             print("-" * width)
 
-        print("FILTER  [1] Yearly  [2] Monthly  [3] Daily")
-        print("        [4] Trainer [5] Products [A] All")
-        print("NAV     [N] Next  [P] Previous [0] Back")
-        print("SEARCH  Type a name, item, service or receipt below.")
-        print("        For IDs use customer:3, item:8, payment:1")
-        print("        Press Enter to clear the search.")
+        print()
+        print("FILTER BY CATEGORY")
+        print("  [1] Yearly Membership      [2] Monthly Session       [3] Daily Session")
+        print("  [4] Trainer Service        [5] Products              [A] All Transactions")
+        print()
+        print("NAVIGATION")
+        print(f"  [<] Previous Page          [>] Next Page            [0] {'Previous View' if history else 'Back to Search Records'}")
+        print()
+        print("SEARCH / RECEIPT")
+        print("  Enter a customer name, product/service name, or receipt number.")
+        print("  For numeric IDs: customer:3    item:8    payment:1")
+        print("  Press Enter to clear the search.")
+        print()
         value = input("Choice / Search: ").strip()
         normalized = value.casefold()
 
         if normalized in ("0", "b", "back"):
+            if history:
+                selected_category, category_name, query, page = history.pop()
+                continue
             return
         if normalized in filters:
-            selected_category, category_name = filters[normalized]
-            page = 1
+            next_category, next_name = filters[normalized]
+            if next_category != selected_category:
+                history.append((selected_category, category_name, query, page))
+                selected_category, category_name = next_category, next_name
+                page = 1
             continue
         if normalized in (">", "n", "next"):
             if page < total_pages:
@@ -3010,8 +3027,10 @@ def search_transactions_ui():
                 pause()
             continue
         if not value:
-            query = ""
-            page = 1
+            if query:
+                history.append((selected_category, category_name, query, page))
+                query = ""
+                page = 1
             continue
 
         selected = next(
@@ -3027,8 +3046,10 @@ def search_transactions_ui():
             continue
 
         # Search stays within the selected category until [A] All is chosen.
-        query = value
-        page = 1
+        if value != query:
+            history.append((selected_category, category_name, query, page))
+            query = value
+            page = 1
 
 
 def view_sale_details(sale_id):
