@@ -741,8 +741,7 @@ def select_customer_from_list(title, empty_action, eligibility=None, empty_messa
 
 
 def paginated_view(title, fetch_fn, columns, empty_message, sort_key="id", width=None, footer_fn=None):
-    if width is None:
-        width = sum(col[2] for col in columns) + 3 * (len(columns) - 1)
+    width = table_width(columns, width or 0)
 
     page = 1
     while True:
@@ -1042,7 +1041,7 @@ def customer_overview():
             nav.append("[<] Prev")
         nav.append("[S] Search")
         nav.append("[0] Back")
-        print(" | ".join(nav))
+        print("        ".join(nav))
         print("-" * width)
         val = input("Enter Customer ID to view details (or choice): ").strip()
         low = val.lower()
@@ -1964,7 +1963,7 @@ def view_products():
 
 def select_item_from_table(title, item_type="", name_header="Item Name", empty_message="There are no items to view.", eligibility=None, on_not_found=None, banner=None):
     columns = item_table_columns(name_header)
-    width = sum(col[2] for col in columns) + 3 * (len(columns) - 1)
+    width = table_width(columns)
     page = 1
 
     params = {}
@@ -2200,7 +2199,11 @@ def manage_purchase_cart(customer_id, customer_name, membership_label, cart):
         print(f"{'Discount:':<78} {format_currency(discount_str):>12}")
         print(f"{'Total Due:':<78} {format_currency(total_str):>12}")
         print("-" * cart_width)
-        print("[A] Add item  [R] Remove line  [C] Checkout  [0] Cancel sale")
+        print()
+        print("PURCHASE ACTIONS")
+        print("  [A] Add Item           [R] Remove Item          [C] Checkout")
+        print("  [0] Cancel Sale")
+        print()
         choice = input("Enter choice: ").strip().lower()
 
         if choice in ("a", "add"):
@@ -2288,7 +2291,7 @@ def pick_purchase_items(customer_id, customer_name, membership_label, cart):
         if page > 1:
             nav.append("[<] Previous")
         nav.append("[0] Done")
-        print(" | ".join(nav))
+        print("        ".join(nav))
 
         val = input("Enter item ID: ").strip()
         low = val.lower()
@@ -3139,7 +3142,7 @@ def display_sales_report(title, period):
     transaction_page = 1
     transaction_page_size = 8
     total_pages = len(data)
-    width = 102
+    width = 112
 
     while True:
         record = data[page - 1]
