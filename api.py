@@ -1055,14 +1055,27 @@ def list_payments(method: str = "", search: str = ""):
 
 
 @app.get("/transactions/search")
-def search_transactions(scope: str, query: str):
-    """Search sales and legacy payments without duplicating membership purchases."""
+def search_transactions(scope: str = "all", query: str = ""):
+    """List all unique receipts/payments and optionally filter across every field.
+
+    The historical scoped search modes remain available for compatibility.
+    """
     scope = scope.strip().lower()
     term = query.strip()
-    if scope not in ("customer", "item", "payment"):
-        raise HTTPException(422, "Search by customer, item, or payment.")
-    if not term:
+    if scope not in ("all", "customer", "item", "payment"):
+        raise HTTPException(422, "Search by customer, item, payment, or all transactions.")
+    if not term and scope != "all":
         raise HTTPException(422, "Enter a customer, item, service, or payment reference.")
+    # Optional prefixes disambiguate numeric IDs in the one-box search.
+    if scope == "all" and ":" in term:
+        prefix, _, value = term.partition(":")
+        alias = {
+            "c": "customer", "customer": "customer",
+            "i": "item", "item": "item", "product": "item", "service": "item",
+            "p": "payment", "payment": "payment", "receipt": "payment",
+        }.get(prefix.strip().lower())
+        if alias is not None:
+            return search_transactions(alias, value.strip())
     if len(term) > 120:
         raise HTTPException(422, "Search term must be at most 120 characters.")
 
@@ -1078,7 +1091,9 @@ def search_transactions(scope: str, query: str):
     payment_params = []
     numeric_id = int(term) if term.isdecimal() else None
 
-    if scope == "customer":
+    if scope == "all":
+        pass
+    elif scope == "customer":
         if numeric_id is not None:
             sales_sql += " AND s.customer_id = ?"
             payment_sql += " AND p.customer_id = ?"
@@ -1192,15 +1207,18 @@ def search_transactions(scope: str, query: str):
 
         results = []
         for sale in sales_rows:
-            items = db.execute(
-                "SELECT item_name, quantity FROM sale_items WHERE sale_id = ? ORDER BY id",
-                (sale["id"],),
-            ).fetchall()
+            items = db.execute("""
+                SELECT si.item_name, si.quantity, si.product_id, si.category,
+                       pr.name AS current_name
+                FROM sale_items si
+                LEFT JOIN products pr ON pr.id = si.product_id
+                WHERE si.sale_id = ? ORDER BY si.id
+            """, (sale["id"],)).fetchall()
             descriptions = [
                 f"{item['quantity']} x {item['item_name']}" if item["quantity"] > 1 else item["item_name"]
                 for item in items
             ]
-            if sale["kind"] == "trainer":
+            if str(sale["kind"] or "").lower() == "trainer":
                 trainer = db.execute(
                     "SELECT session_label FROM trainer_sessions WHERE sale_id = ?",
                     (sale["id"],),
@@ -1219,11 +1237,19 @@ def search_transactions(scope: str, query: str):
                 "amount": money(sale["total_cents"]),
                 "payment_method": sale["payment_method"],
                 "status": sale["status"],
+                "product_ids": [row["product_id"] for row in items],
+                "search_text": " ".join(
+                    [sale["customer_name"], sale["receipt_no"]]
+                    + [part for row in items for part in (
+                        row["item_name"], row["category"], row["current_name"] or ""
+                    )]
+                    + descriptions
+                ),
             })
 
         for payment in payment_rows:
             purchased = db.execute("""
-                SELECT pr.name, pu.quantity
+                SELECT pr.id AS product_id, pr.name, pr.category, pu.quantity
                 FROM purchases pu JOIN products pr ON pr.id = pu.product_id
                 WHERE pu.payment_id = ? ORDER BY pu.id
             """, (payment["id"],)).fetchall()
@@ -1242,8 +1268,31 @@ def search_transactions(scope: str, query: str):
                 "amount": money(payment["amount_cents"]),
                 "payment_method": payment["method"],
                 "status": "Completed",
+                "product_ids": [row["product_id"] for row in purchased],
+                "search_text": " ".join(
+                    [payment["customer_name"], payment["description"], f"PAY-{payment['id']:06d}"]
+                    + [part for row in purchased for part in (row["name"], row["category"])]
+                    + descriptions
+                ),
             })
 
+    if scope == "all" and term:
+        lowered = term.casefold()
+        numeric = int(term) if term.isdecimal() else None
+        results = [
+            row for row in results
+            if (
+                (numeric is not None and (
+                    row["customer_id"] == numeric
+                    or row["record_id"] == numeric
+                    or numeric in row["product_ids"]
+                ))
+                or (numeric is None and lowered in row["search_text"].casefold())
+            )
+        ]
+    for row in results:
+        row.pop("search_text", None)
+        row.pop("product_ids", None)
     results.sort(key=lambda row: (row["created_at"], row["record_id"]), reverse=True)
     return results
 
