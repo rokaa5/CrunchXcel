@@ -1697,25 +1697,38 @@ def sales_report(period: str = "daily"):
             tx_list = []
             if period == "daily":
                 sale_txs = db.execute("""
-                    SELECT receipt_no, created_at, customer_name, total_cents, status
+                    SELECT id, receipt_no, created_at, customer_name, total_cents, status, kind
                     FROM sales
                     WHERE strftime('%Y-%m-%d', created_at) = ?
                     ORDER BY created_at DESC, id DESC
                 """, (p,)).fetchall()
                 for s in sale_txs:
                     time_str = s["created_at"][11:16] if len(s["created_at"]) >= 16 else s["created_at"]
+                    sold_items = db.execute(
+                        "SELECT item_name, quantity FROM sale_items WHERE sale_id = ? ORDER BY id",
+                        (s["id"],),
+                    ).fetchall()
+                    item_names = [
+                        f"{item['quantity']} x {item['item_name']}" if item["quantity"] > 1 else item["item_name"]
+                        for item in sold_items
+                    ]
+                    if s["kind"] == "trainer":
+                        trainer = db.execute(
+                            "SELECT session_label FROM trainer_sessions WHERE sale_id = ?",
+                            (s["id"],),
+                        ).fetchone()
+                        if trainer and trainer["session_label"]:
+                            item_names = [trainer["session_label"]]
                     tx_list.append({
                         "receipt_no": s["receipt_no"],
                         "time": time_str,
-                        "customer": s["customer_name"],
+                        "item_name": ", ".join(item_names) or (s["kind"] or "Transaction").replace("_", " ").title(),
                         "total": money(s["total_cents"]),
                         "status": s["status"]
                     })
                 mem_txs = db.execute("""
-                    SELECT p.id, p.created_at, p.amount_cents,
-                           c.first_name || ' ' || c.last_name AS customer_name
+                    SELECT p.id, p.created_at, p.amount_cents, p.description
                     FROM payments p
-                    JOIN customers c ON c.id = p.customer_id
                     WHERE strftime('%Y-%m-%d', p.created_at) = ?
                     ORDER BY p.created_at DESC, p.id DESC
                 """, (p,)).fetchall()
@@ -1724,7 +1737,7 @@ def sales_report(period: str = "daily"):
                     tx_list.append({
                         "receipt_no": f"PAY-{m['id']:04d}",
                         "time": time_str,
-                        "customer": m["customer_name"],
+                        "item_name": m["description"].removeprefix("Plan Renewal: ").removeprefix("Plan: "),
                         "total": money(m["amount_cents"]),
                         "status": "Completed"
                     })
