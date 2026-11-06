@@ -3461,6 +3461,7 @@ def report(endpoint, title, params=None):
                     "active": data.get("yearly", {}).get("active", 0),
                     "expired": data.get("yearly", {}).get("expired", 0),
                     "upcoming": data.get("yearly", {}).get("upcoming", 0),
+                    "cancelled": data.get("yearly", {}).get("cancelled", 0),
                     "total": data.get("yearly", {}).get("total", 0)
                 },
                 {
@@ -3468,6 +3469,7 @@ def report(endpoint, title, params=None):
                     "active": data.get("monthly", {}).get("active", 0),
                     "expired": data.get("monthly", {}).get("expired", 0),
                     "upcoming": data.get("monthly", {}).get("upcoming", 0),
+                    "cancelled": data.get("monthly", {}).get("cancelled", 0),
                     "total": data.get("monthly", {}).get("total", 0)
                 },
                 {
@@ -3475,6 +3477,7 @@ def report(endpoint, title, params=None):
                     "active": data.get("active", 0),
                     "expired": data.get("expired", 0),
                     "upcoming": data.get("upcoming", 0),
+                    "cancelled": data.get("cancelled", 0),
                     "total": data.get("total", 0)
                 }
             ]
@@ -3483,6 +3486,7 @@ def report(endpoint, title, params=None):
             ("Active", "active", 12, "right"),
             ("Expired", "expired", 12, "right"),
             ("Upcoming", "upcoming", 12, "right"),
+            ("Cancelled", "cancelled", 12, "right"),
             ("Total", "total", 10, "right")
         ]
         paginated_view(
