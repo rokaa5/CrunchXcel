@@ -2855,67 +2855,121 @@ def search_customer_id():
     pause()
 
 
-def search_membership():
-    if not guard_records("memberships", "search", "SEARCH MEMBERSHIP", input_screen=True):
-        return
-
-    membership_id = ask_number("Membership ID: ")
-
-    records = request("GET", "/memberships")
-
-    if records is None:
-        pause()
-        return
-
-    membership = next(
-        (
-            item for item in records
-            if item["id"] == membership_id
-        ),
-        None
-    )
-
-    if membership:
-        show(membership)
-    else:
-        header("SEARCH MEMBERSHIP", input_screen=False)
-        print("\nThat membership was not found.")
-
-    pause()
-
-
 def search_payment():
-    if not guard_records("payments", "search", "SEARCH PAYMENT", input_screen=True):
-        return
+    """Find recorded purchases and services by customer, item, or payment reference."""
+    scopes = {
+        "1": ("customer", "Customer name or ID"),
+        "2": ("item", "Product or service name or ID"),
+        "3": ("payment", "Payment ID or receipt number"),
+    }
 
-    query = ask("Search (Customer Name, Customer ID, or Payment ID): ")
+    while True:
+        header("SEARCH TRANSACTIONS", input_screen=False, width=78)
+        print("[1] Customer Name or ID")
+        print("[2] Product / Service Name or ID")
+        print("[3] Payment ID or Receipt Number")
+        print("-" * 78)
+        print("[0] Back")
+        print("-" * 78)
+        selection = input("Choice: ").strip().lower()
+        if selection in ("0", "b", "back"):
+            return
+        if selection not in scopes:
+            print("Invalid choice.")
+            pause()
+            continue
 
-    records = request("GET", "/payments", params={"search": query})
-    if records is None:
-        pause()
-        return
+        scope, label = scopes[selection]
+        header("SEARCH TRANSACTIONS", input_screen=False, width=78)
+        print(f"Search by: {label}")
+        print("[0] Back")
+        print("-" * 78)
+        term = input("Search: ").strip()
+        if term.lower() in ("0", "b", "back"):
+            continue
+        if not term:
+            print("Enter a search term.")
+            pause()
+            continue
 
-    if not records:
-        header("SEARCH PAYMENT", input_screen=False)
-        print(f'\nNo payments found matching "{query}".')
-        pause()
-        return
+        records = request(
+            "GET", "/transactions/search",
+            params={"scope": scope, "query": term},
+        )
+        if records is None:
+            pause()
+            continue
+        if not records:
+            header("SEARCH RESULTS", input_screen=False, width=78)
+            print(f"No transactions found for '{term}'.")
+            pause()
+            continue
 
-    columns = [
-        ("ID", "id", 4),
-        ("Customer", "customer_name", 18),
-        ("Description", "description", 24),
-        ("Method", "method", 10),
-        ("Amount", lambda r: format_currency(r.get("amount")), 10, "right"),
-    ]
-    paginated_view(
-        "SEARCH PAYMENT RESULTS",
-        lambda: records,
-        columns,
-        empty_message="No payments found.",
-        sort_key=None,
-        width=78
-    )
+        page = 1
+        page_size = 5
+        while True:
+            total_pages = (len(records) + page_size - 1) // page_size
+            header("TRANSACTION RESULTS", input_screen=False, width=78)
+            print(f"{label}: {term}")
+            print(f"Matches: {len(records)} | Page {page} of {total_pages}")
+            print("-" * 78)
+            start = (page - 1) * page_size
+            for transaction in records[start:start + page_size]:
+                print(
+                    f"{transaction['reference']}  "
+                    f"{transaction['created_at'][:16]}  "
+                    f"{format_currency(transaction['amount'])}  "
+                    f"[{transaction['status']}]"
+                )
+                if transaction.get("customer_id") is not None:
+                    print(
+                        f"  Customer: {transaction['customer_name']} "
+                        f"(ID {transaction['customer_id']})"
+                    )
+                else:
+                    print("  Customer: Anonymous")
+                for item_line in wrap_cell(transaction["item_names"], 73):
+                    print(f"  {item_line}")
+                print(f"  Payment: {transaction['payment_method']}")
+                print("-" * 78)
+
+            print(page_nav_options(page, total_pages, include_back=True))
+            print("Enter a receipt/payment reference to view details.")
+            val = input("Reference or choice: ").strip().lower()
+            if val in ("0", "b", "back"):
+                break
+            if val in ("n", "next") and page < total_pages:
+                page += 1
+                continue
+            if val in ("p", "prev", "previous") and page > 1:
+                page -= 1
+                continue
+
+            selected = next(
+                (tx for tx in records if tx["reference"].lower() == val),
+                None,
+            )
+            if selected is None:
+                print("That reference is not in the search results.")
+                pause()
+                continue
+            if selected["record_type"] == "sale":
+                view_sale_details(selected["record_id"])
+                continue
+
+            header("PAYMENT DETAILS", input_screen=False, width=78)
+            print(f"Reference:       {selected['reference']}")
+            print(f"Date:            {selected['created_at']}")
+            print(f"Customer:        {selected['customer_name']}")
+            if selected.get("customer_id") is not None:
+                print(f"Customer ID:     {selected['customer_id']}")
+            print("Items / Services:")
+            for line in wrap_cell(selected["item_names"], 74):
+                print(f"  {line}")
+            print(f"Payment Method:  {selected['payment_method']}")
+            print(f"Amount:          {format_currency(selected['amount'])}")
+            print(f"Status:          {selected['status']}")
+            pause()
 
 
 def search_purchases():
@@ -3034,8 +3088,7 @@ def search_records():
     submenu("SEARCH RECORDS", [
         ("Search Customer by Name", search_customer),
         ("Search Customer by ID", search_customer_id),
-        ("Search Membership", search_membership),
-        ("Search Payment", search_payment),
+        ("Search Transactions", search_payment),
         ("Search Purchase", search_purchases)
     ])
 
