@@ -566,12 +566,14 @@ def table_width(columns, minimum=0):
 
 
 def print_table_header(columns):
+    print()
     cells = []
     for col in columns:
         label, width = col[0], col[2]
         align = col[3] if len(col) > 3 else "left"
         cells.append(format_cell(label, width, align))
     print(TABLE_SEPARATOR.join(cells))
+    print()
 
 
 def format_cell(value, width, align="left"):
@@ -599,6 +601,7 @@ def print_table_row(rec, columns):
             else:
                 row_cells.append(" " * w)
         print(TABLE_SEPARATOR.join(row_cells))
+    print()
 
 
 def mask_phone(phone: str) -> str:
@@ -3169,8 +3172,9 @@ def search_transactions_ui():
         if not visible:
             print("No matching transactions.")
         print("-" * width)
-        for hotkey, (_, label) in categories.items():
-            print(f"[{hotkey}] {label}", end="    ")
+        print()
+        for index, (hotkey, (_, label)) in enumerate(categories.items(), 1):
+            print(f"[{hotkey}] {label}", end="\n" if index % 3 == 0 else "    ")
         print()
         print("[S] Search within this category     [C] Clear search")
         if pages > 1:

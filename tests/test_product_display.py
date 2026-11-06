@@ -39,7 +39,7 @@ class ProductDisplayTests(unittest.TestCase):
                     ("Price", "price", 8, "right"),
                 ],
             )
-        lines = output.getvalue().splitlines()
+        lines = [line for line in output.getvalue().splitlines() if line]
         self.assertGreater(len(lines), 1)
         wrapped = " ".join(line.split("|")[1].strip() for line in lines)
         self.assertEqual(wrapped, name)
