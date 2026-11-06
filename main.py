@@ -1825,7 +1825,7 @@ def refund_purchase_session():
             controls += "    [<] Previous page    [>] Next page"
         controls += "    [C] Clear search    [0] Back"
         print_controls(controls, width)
-        print()
+        print("-" * width)
         choice = input("Receipt number or choice: ").strip()
         lower = choice.casefold()
         if lower in ("0", "b", "back"):
