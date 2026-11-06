@@ -189,15 +189,19 @@ def ensure_daily_session_product(db):
 
 
 def seed_default_discount_rules(db):
-    """Seed the member rate from the posted price list: daily session is 70.00, 50.00 for members."""
-    if db.execute("SELECT COUNT(*) FROM discount_rules").fetchone()[0] > 0:
-        return
+    """Seed the daily member price without overriding any existing configured discounts."""
     daily = db.execute("SELECT id FROM products WHERE name = 'Daily session'").fetchone()
-    if daily:
+    if not daily:
+        return
+    existing = db.execute(
+        "SELECT 1 FROM discount_rules WHERE product_id = ? AND membership_type = 'Yearly' LIMIT 1",
+        (daily["id"],),
+    ).fetchone()
+    if not existing:
         db.execute(
             """INSERT INTO discount_rules (product_id, membership_type, discount_type, value, is_active)
                VALUES (?, 'Yearly', 'fixed', 2000, 1)""",
-            (daily["id"],)
+            (daily["id"],),
         )
 
 

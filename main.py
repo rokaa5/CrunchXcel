@@ -1506,57 +1506,96 @@ def monthly_session_menu():
     ])
 
 
+def select_sale_customer(title):
+    """Choose a verified active yearly member or an anonymous non-member sale."""
+    while True:
+        header(title, input_screen=False, width=58)
+        print("[1] Member (discounted rate)")
+        print("[2] Non-member (regular rate)")
+        print("-" * 58)
+        print("[0] Back")
+        print("-" * 58)
+        choice = input("Choice: ").strip().lower()
+
+        if choice in ("0", "b", "back", "cancel"):
+            return None
+        if choice == "2":
+            return None, "Walk-in", "Non-member"
+        if choice != "1":
+            print("Invalid choice.")
+            pause()
+            continue
+
+        columns = [
+            ("ID", "id", 4),
+            ("Name", lambda c: f"{c.get('first_name', '')} {c.get('last_name', '')}".strip(), 22),
+            ("Yearly", "yearly_status", 10),
+            ("Expires", lambda c: c.get("yearly_end_date") or "-", 10),
+        ]
+        try:
+            customer = select_customer_from_list(
+                "SELECT ACTIVE MEMBER",
+                "select for a member-rate sale",
+                eligibility="active_yearly",
+                empty_message="No active yearly members found.",
+                columns=columns,
+                width=62,
+            )
+        except GoBack:
+            continue
+
+        if not customer:
+            continue
+        if customer.get("yearly_status") != "Active":
+            print("This customer does not have an active yearly membership.")
+            pause()
+            continue
+
+        full_name = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
+        return customer["id"], full_name, "Active (Yearly)"
+
+
 def daily_session_flow():
     while True:
-        header("DAILY SESSION", input_screen=False, width=58)
-        print("Identify customer by ID or press Enter for anonymous walk-in.")
-        print("[0] to cancel")
-        print("-" * 58)
-        cid_input = input("Customer ID [Enter for Walk-in]: ").strip()
-
-        if cid_input.lower() in ("0", "cancel", "b", "back"):
+        chosen = select_sale_customer("DAILY SESSION")
+        if chosen is None:
             return
+        customer_id, customer_name, membership_label = chosen
 
-        customer_id = None
-        customer_name = "Walk-in"
-        membership_label = "Not Registered"
-        has_access = False
-
-        if cid_input:
-            if not cid_input.isdigit():
-                print("Enter a numeric Customer ID or leave blank for walk-in.")
+        if customer_id is not None:
+            ov = request("GET", f"/customers/{customer_id}/overview")
+            if ov is None:
                 pause()
                 continue
-            cid = int(cid_input)
-            cust = request("GET", f"/customers/{cid}", silent_404=True)
-            if not cust:
-                print(f"Customer with ID {cid} was not found.")
-                pause()
-                continue
-            customer_id = cid
-            customer_name = f"{cust.get('first_name', '')} {cust.get('last_name', '')}".strip()
-            ov = request("GET", f"/customers/{cid}/overview")
-            if ov:
-                if ov.get("yearly_status") == "Active":
-                    membership_label = "Active (Yearly)"
-                elif ov.get("monthly_status") == "Active":
-                    membership_label = "Active (Monthly)"
-                else:
-                    membership_label = ov.get("yearly_label", "Not Registered")
-                has_access = ov.get("has_gym_access", False)
-
-            if has_access:
-                print("\n[!] WARNING: Customer already has an active Monthly session with valid gym access.")
-                cont = input("Continue selling daily session anyway? (y/n, 0 to cancel): ").strip().lower()
-                if cont not in ("y", "yes"):
-                    print("Transaction cancelled.")
-                    pause()
+            if ov.get("has_gym_access"):
+                header("DAILY SESSION", input_screen=False, width=58)
+                print(f"Customer: {customer_name}")
+                print("This customer already has valid monthly gym access.")
+                print("A daily session is not required.")
+                print("-" * 58)
+                print("[1] Purchase daily session anyway")
+                print("[0] Cancel")
+                if input("Choice: ").strip() != "1":
                     return
 
-        # Fetch daily session quote
+        # Resolve the current daily-session product ID instead of assuming a seeded ID.
+        daily_products = request("GET", "/products")
+        if daily_products is None:
+            pause()
+            return
+        daily_product = next(
+            (p for p in daily_products if p.get("name") == "Daily session" and p.get("is_active", 1) == 1),
+            None,
+        )
+        if not daily_product:
+            print("Daily session is not available.")
+            pause()
+            return
+
+        # A daily pass always represents exactly one session.
         prod_quote = request("POST", "/quotes", {
             "customer_id": customer_id,
-            "items": [{"product_id": 20, "quantity": 1}]
+            "items": [{"product_id": daily_product["id"], "quantity": 1}]
         })
         if not prod_quote:
             print("Error retrieving product details.")
@@ -2073,39 +2112,10 @@ def record_purchase(customer=None):
         else:
             membership_label = "Not Registered"
     else:
-        header("SERVICES/PRODUCTS", input_screen=False, width=58)
-        print("Identify customer by ID or press Enter for anonymous walk-in.")
-        print("[0] to cancel")
-        print("-" * 58)
-        cid_input = input("Customer ID [Enter for Walk-in]: ").strip()
-        if cid_input.lower() in ("0", "cancel", "b", "back"):
+        chosen = select_sale_customer("SERVICES/PRODUCTS")
+        if chosen is None:
             return
-
-        customer_id = None
-        customer_name = "Walk-in"
-        membership_label = "Not Registered"
-
-        if cid_input:
-            if not cid_input.isdigit():
-                print("Enter a numeric Customer ID or leave blank for walk-in.")
-                pause()
-                return
-            cid = int(cid_input)
-            cust = request("GET", f"/customers/{cid}", silent_404=True)
-            if not cust:
-                print(f"Customer with ID {cid} was not found.")
-                pause()
-                return
-            customer_id = cid
-            customer_name = f"{cust.get('first_name', '')} {cust.get('last_name', '')}".strip()
-            ov = request("GET", f"/customers/{cid}/overview")
-            if ov:
-                if ov.get("yearly_status") == "Active":
-                    membership_label = "Active (Yearly)"
-                elif ov.get("monthly_status") == "Active":
-                    membership_label = "Active (Monthly)"
-                else:
-                    membership_label = ov.get("yearly_label", "Not Registered")
+        customer_id, customer_name, membership_label = chosen
 
     cart = []
     manage_purchase_cart(customer_id, customer_name, membership_label, cart)
@@ -2382,56 +2392,17 @@ def checkout_purchase(customer_id, customer_name, membership_label, cart, quote_
 
 def trainer_session_flow():
     while True:
-        header("TRAINER SESSION", input_screen=False, width=58)
-        print("[1] Existing customer")
-        print("[2] Walk-in customer")
-        print("-" * 58)
-        print("[0] Back")
-        print("-" * 58)
-        choice = input("Choice: ").strip()
-
-        if choice in ("0", "b", "back"):
+        chosen = select_sale_customer("TRAINER SESSION")
+        if chosen is None:
             return
+        customer_id, customer_name, member_tag = chosen
+        customer_type = "Member" if customer_id is not None else "Non-member"
 
-        if choice == "1":
-            cust_cols = [
-                ("ID", "id", 4),
-                ("Name", lambda c: f"{c.get('first_name', '')} {c.get('last_name', '')}".strip(), 20),
-                ("Membership", "membership", 12),
-                ("Subscription", "subscription", 14),
-            ]
-            try:
-                customer = select_customer_from_list(
-                    "SELECT CUSTOMER",
-                    "record a trainer session",
-                    columns=cust_cols,
-                    width=58
-                )
-            except GoBack:
-                continue
-
-            if not customer:
-                continue
-
-            customer_id = customer["id"]
-            customer_name = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
-            is_active_member = customer.get("yearly_status") == "Active"
-            customer_type = "Member" if is_active_member else "Non-member"
-            member_tag = "Active member" if is_active_member else "Non-member"
-
+        if customer_id is not None:
             count_data = request("GET", f"/customers/{customer_id}/trainer-sessions/count-this-month")
             sessions_count = count_data.get("count", 0) if count_data else 0
-
-        elif choice == "2":
-            customer_id = None
-            customer_name = "Walk-in"
-            customer_type = "Non-member"
-            member_tag = "Non-member"
-            sessions_count = 0
         else:
-            print("Invalid choice.")
-            pause()
-            continue
+            sessions_count = 0
 
         all_products = request("GET", "/products")
         if not all_products:

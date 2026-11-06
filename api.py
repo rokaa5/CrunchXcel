@@ -370,6 +370,9 @@ def enrich_customers(db, records):
         record["can_renew_yearly"] = (y_status in ("Active", "Expired") and not y_waiting)
         record["can_renew_monthly"] = (m_status in ("Active", "Expired") and not m_waiting)
 
+        # An active yearly membership qualifies for member-specific rates.
+        record["is_active_yearly"] = (y_status == "Active")
+
         has_payments = bool(db.execute(
             "SELECT 1 FROM payments WHERE customer_id = ? LIMIT 1",
             (record["id"],)
@@ -430,6 +433,7 @@ def list_customers(first_name: str = "", last_name: str = "", search: str = "", 
             "renew": "can_renew_yearly",
             "renew_yearly": "can_renew_yearly",
             "renew_monthly": "can_renew_monthly",
+            "active_yearly": "is_active_yearly",
             "delete": "can_delete",
         }
         if eligibility in filter_map:
@@ -456,6 +460,7 @@ def check_customers_exist(eligibility: str = ""):
                 "renew": "can_renew_yearly",
                 "renew_yearly": "can_renew_yearly",
                 "renew_monthly": "can_renew_monthly",
+                "active_yearly": "is_active_yearly",
                 "delete": "can_delete",
             }
             if eligibility in filter_map:
@@ -1500,9 +1505,9 @@ def create_trainer_session(data: TrainerSessionCreate):
             cust = db.execute("SELECT * FROM customers WHERE id=?", (data.customer_id,)).fetchone()
             if not cust:
                 raise HTTPException(404, f"Customer with ID {data.customer_id} was not found.")
-            mems = rows(db.execute("SELECT * FROM memberships WHERE customer_id=? ORDER BY end_date ASC", (data.customer_id,)))
-            y_status, _, _ = compute_customer_plan_status(mems, "Yearly membership", today_str)
-            customer_type = "Member" if y_status == "Active" else "Non-member"
+            # Use the same active/cancelled membership validation as purchase quotes.
+            member_status = membership_summary(db, data.customer_id)
+            customer_type = "Member" if member_status["yearly_status"] == "Active" else "Non-member"
             customer_name = f"{cust['first_name']} {cust['last_name']}"
         else:
             customer_type = "Non-member"
