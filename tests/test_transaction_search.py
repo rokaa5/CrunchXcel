@@ -193,5 +193,110 @@ class TransactionSearchTests(unittest.TestCase):
             self.assertEqual(error.exception.status_code, 422)
 
 
+    def test_unfiltered_transaction_list_includes_all_sales_only_once(self):
+        customer_id = self.customer()
+        membership = api.create_membership(MembershipRegistration(
+            customer_id=customer_id, plan="Yearly membership",
+            start_date=ph_today(), end_date=ph_today() + timedelta(days=365),
+            method="Cash", amount_tendered=Decimal("300.00"),
+        ))
+        purchase = self.sale()
+        entries = api.search_transactions()
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(
+            {row["reference"] for row in entries},
+            {membership["sale"]["receipt_no"], purchase["receipt_no"]},
+        )
+        self.assertFalse(any(row["reference"].startswith("PAY-") for row in entries))
+
+    def test_one_box_search_finds_customer_product_service_and_receipt(self):
+        cid = self.customer()
+        product_sale = self.sale(customer_id=cid)
+        daily_sale = api.create_daily_session(DailySessionCreate(
+            customer_id=None, payment_method="Cash",
+            amount_tendered=Decimal("70.00"),
+        ))
+        product_id, _ = self.product()
+        daily_id, _ = self.product("Daily session")
+        for term, receipt in (
+            ("Alex Member", product_sale["receipt_no"]),
+            ("Bottled", product_sale["receipt_no"]),
+            (f"item:{product_id}", product_sale["receipt_no"]),
+            ("Gym Access", daily_sale["receipt_no"]),
+            (f"service:{daily_id}", daily_sale["receipt_no"]),
+            (product_sale["receipt_no"], product_sale["receipt_no"]),
+            (f"customer:{cid}", product_sale["receipt_no"]),
+        ):
+            self.assertIn(
+                receipt,
+                {record["reference"] for record in api.search_transactions(query=term)},
+            )
+        self.assertEqual(api.search_transactions(query="unmatched product name"), [])
+
+    def test_report_excludes_membership_payment_duplicates_for_both_periods(self):
+        cid = self.customer()
+        member = api.create_membership(MembershipRegistration(
+            customer_id=cid, plan="Yearly membership",
+            start_date=ph_today(), end_date=ph_today() + timedelta(days=365),
+            method="Cash", amount_tendered=Decimal("300.00"),
+        ))
+        water = self.sale()
+        daily = api.create_daily_session(DailySessionCreate(
+            customer_id=None, payment_method="Cash",
+            amount_tendered=Decimal("70.00"),
+        ))
+        for period in ("daily", "monthly"):
+            reports = api.sales_report(period)
+            self.assertEqual(len(reports), 1)
+            report = reports[0]
+            self.assertEqual(report["total_sales"], "380.00")
+            self.assertEqual(report["total_transactions"], 3)
+            categories = {c["category"]: c for c in report["categories"]}
+            self.assertEqual(categories["Membership"]["amount"], "300.00")
+            self.assertEqual(categories["Membership"]["transactions"], 1)
+            self.assertEqual(categories["Gym Access"]["amount"], "70.00")
+            self.assertEqual(categories["Beverage"]["amount"], "10.00")
+            self.assertEqual(
+                sum(Decimal(c["amount"]) for c in report["categories"]),
+                Decimal("380.00"),
+            )
+        receipts = {r["receipt_no"] for r in api.sales_report("daily")[0]["transactions"]}
+        self.assertEqual(
+            receipts,
+            {member["sale"]["receipt_no"], water["receipt_no"], daily["receipt_no"]},
+        )
+
+    def test_legacy_payments_remain_in_report_without_double_counting(self):
+        cid = self.customer()
+        self.sale()
+        with database.connect() as db:
+            payment = db.execute(
+                "INSERT INTO payments (customer_id, description, amount_cents, method) "
+                "VALUES (?, 'Legacy service fee', 2500, 'Cash')", (cid,),
+            )
+            payment_id = payment.lastrowid
+        row = api.sales_report("daily")[0]
+        self.assertEqual(row["total_sales"], "35.00")
+        self.assertEqual(row["total_transactions"], 2)
+        self.assertIn(
+            f"PAY-{payment_id:06d}",
+            {record["receipt_no"] for record in row["transactions"]},
+        )
+        self.assertEqual(
+            {record["reference"] for record in api.search_transactions()},
+            {f"PAY-{payment_id:06d}", "R-000001"},
+        )
+
+    def test_voided_sales_not_included_in_income_or_transaction_counts(self):
+        receipt = self.sale()
+        with database.connect() as db:
+            db.execute("UPDATE sales SET status = 'Voided' WHERE id = ?", (receipt["id"],))
+        report = api.sales_report("daily")[0]
+        self.assertEqual(report["total_sales"], "0.00")
+        self.assertEqual(report["total_transactions"], 0)
+        self.assertEqual(report["voided_count"], 1)
+        self.assertEqual(report["transactions"][0]["status"], "Voided")
+
+
 if __name__ == "__main__":
     unittest.main()
