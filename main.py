@@ -1262,6 +1262,7 @@ def view_plan_memberships(plan_name, status="all"):
         if pages > 1:
             controls += "        [<] Previous page        [>] Next page"
         print(controls + "        [0] Back")
+        print("-" * width)
         choice = input("Choice: ").strip().casefold()
         if choice in ("0", "b", "back"):
             return
