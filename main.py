@@ -1757,13 +1757,9 @@ def view_payments(method=""):
 
 def payment_management():
     submenu("PAYMENT MANAGEMENT", [
-        ("Record Purchase", record_purchase),
-        ("View Payment History",
-         lambda: view_payments()),
-        ("View Cash Payments",
-         lambda: view_payments("Cash")),
-        ("View E-Wallet Payments",
-         lambda: view_payments("E-Wallet"))
+        ("View Payment History", lambda: view_payments()),
+        ("View Cash Payments", lambda: view_payments("Cash")),
+        ("View E-Wallet Payments", lambda: view_payments("E-Wallet")),
     ])
 
 
@@ -2720,8 +2716,9 @@ def trainer_session_flow():
 
 def services_products_menu():
     submenu("SERVICES/PRODUCTS", [
-        ("Products", record_purchase),
-        ("Trainer Session", trainer_session_flow),
+        ("Record Product Purchase", record_purchase),
+        ("Book Trainer Session", trainer_session_flow),
+        ("Manage Products and Services", products_services),
     ])
 
 
@@ -3131,9 +3128,8 @@ def main():
         ("Customer Management", customer_management),
         ("Product/Service Management", product_service_management),
         ("Payment Management", payment_management),
-        ("Products and Services", products_services),
         ("Search Records", search_records),
-        ("Sales Reports", sales_reports)
+        ("Sales Reports", sales_reports),
     ])
 
     clear_screen()
