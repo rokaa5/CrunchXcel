@@ -538,6 +538,11 @@ def print_receipt(sale, width=58):
     print(f"Payment:     {sale.get('payment_method', '-')}")
     print(f"{'Tendered':<44} {format_currency(sale.get('amount_tendered', sale['total'])):>12}")
     print(f"{'Change':<44} {format_currency(sale.get('change', '0.00')):>12}")
+    if sale.get("status") == "Refunded":
+        print("-" * width)
+        print(f"Status:      Refunded ({sale.get('refund_no', '-')})")
+        print(f"Amount:      {format_currency(sale.get('refunded_amount', '0.00'))}")
+        print(f"Refund Date: {sale.get('refunded_at', '-')}")
     print("-" * width)
 
 
@@ -3081,6 +3086,25 @@ def show_legacy_payment_details(transaction):
     pause()
 
 
+def show_refund_details(refund_id):
+    record = request("GET", f"/refunds/{refund_id}")
+    if not record:
+        pause()
+        return
+    header("REFUND DETAILS", input_screen=False, width=84)
+    print(f"Refund Number:    {record['refund_no']}")
+    print(f"Original Receipt: {record['receipt_no']}")
+    print(f"Refund Date:      {record['created_at']}")
+    print(f"Amount Refunded:  {format_currency(record['amount'])}")
+    print(f"Refund Method:    {record['method']}")
+    print(f"Original Method:  {record['original_payment_method']}")
+    print(f"Customer:         {record['customer_name']}")
+    print(f"Reason:           {record['reason']}")
+    print("-" * 84)
+    print("This is a manual refund record; no electronic transfer is initiated.")
+    pause()
+
+
 def search_transactions_ui():
     """Browse compact transaction entries with category shortcuts and one search box."""
     filters = {
@@ -3215,6 +3239,8 @@ def search_transactions_ui():
         if selected:
             if selected["record_type"] == "sale":
                 view_sale_details(selected["record_id"])
+            elif selected["record_type"] == "refund":
+                show_refund_details(selected["record_id"])
             else:
                 show_legacy_payment_details(selected)
             continue
@@ -3261,29 +3287,16 @@ def view_sale_details(sale_id):
         print(f"{'Change:':<46} {format_currency(sale['change']):>10}")
         print("=" * detail_width)
 
-        if sale["status"] == "Completed":
-            print("[V] Void sale")
-            print("[0] Back")
-            print("-" * detail_width)
-            choice = input("Choice: ").strip().lower()
-            if choice in ("0", "b", "back"):
-                return
-            elif choice == "v":
-                try:
-                    reason = ask("Enter void reason: ")
-                except GoBack:
-                    continue
-                confirm = input("Confirm void this sale? (Y/N): ").strip().lower()
-                if confirm == "y":
-                    res = request("POST", f"/sales/{sale_id}/void", {"reason": reason})
-                    if res:
-                        print("\nSale has been voided successfully.")
-                        pause()
-                else:
-                    print("Void cancelled.")
-                    pause()
-        else:
-            pause()
+        if sale["status"] == "Refunded":
+            print(f"Refund Ref.:     {sale.get('refund_no', '-')}")
+            print(f"Refund Amount:   {format_currency(sale.get('refunded_amount', '0.00'))}")
+            print(f"Refund Date:     {sale.get('refunded_at', '-')}")
+            print(f"Refund Method:   {sale.get('refund_method', '-')}")
+            print(f"Refund Reason:   {sale.get('refund_reason', '-')}")
+        print("-" * detail_width)
+        print("[0] Back")
+        choice = input("Choice: ").strip().lower()
+        if choice in ("0", "b", "back", ""):
             return
 
 
