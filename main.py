@@ -3150,9 +3150,9 @@ def display_sales_report(title, period):
         period_label = "Date" if period == "daily" else "Month"
         print(f"{period_label}: {record['period']}")
         category_columns = [
-            ("Category", "category", 26),
-            ("Transactions", "transactions", 16, "right"),
-            ("Amount", lambda row: format_currency(row["amount"]), 18, "right"),
+            ("Category", "category", 38),
+            ("Transactions", "transactions", 24, "right"),
+            ("Amount", lambda row: format_currency(row["amount"]), 30, "right"),
         ]
         print("-" * width)
         print_table_header(category_columns)
