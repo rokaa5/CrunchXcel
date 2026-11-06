@@ -1824,141 +1824,200 @@ def sales_report(period: str = "daily"):
 
     grouping = "%Y-%m-%d" if period == "daily" else "%Y-%m"
 
+    # Membership purchases already have a sales receipt AND a payment row.
+    # Only standalone/legacy payments represent additional revenue.
+    legacy_payment_filter = """
+        NOT EXISTS (
+            SELECT 1 FROM memberships m
+            JOIN sales linked_sale ON linked_sale.id = m.sale_id
+            WHERE m.customer_id = p.customer_id
+              AND m.created_at = p.created_at
+              AND m.amount_cents = p.amount_cents
+              AND (p.description = 'Plan: ' || m.plan
+                   OR p.description = 'Plan Renewal: ' || m.plan)
+        )
+    """
+    categories_order = [
+        "Membership", "Gym Access", "Coaching",
+        "Beverage", "Supplement", "Merchandise", "Other",
+    ]
     with connect() as db:
         periods = [
-            r[0] for r in db.execute(f"""
-                SELECT DISTINCT p FROM (
-                    SELECT strftime('{grouping}', created_at) AS p FROM payments
+            row[0] for row in db.execute(f"""
+                SELECT DISTINCT period_value FROM (
+                    SELECT strftime('{grouping}', created_at) AS period_value FROM payments
                     UNION
-                    SELECT strftime('{grouping}', created_at) AS p FROM sales
-                ) WHERE p IS NOT NULL ORDER BY p DESC
+                    SELECT strftime('{grouping}', created_at) AS period_value FROM sales
+                ) WHERE period_value IS NOT NULL ORDER BY period_value DESC
             """).fetchall()
         ]
-
-        STANDARD_CATEGORIES = ["Membership", "Gym Access", "Coaching", "Beverage", "Supplement", "Merchandise"]
         records = []
+        for value in periods:
+            sales = db.execute(f"""
+                SELECT id, receipt_no, created_at, total_cents, status, kind
+                FROM sales WHERE strftime('{grouping}', created_at) = ?
+                ORDER BY created_at DESC, id DESC
+            """, (value,)).fetchall()
+            completed_sales = [row for row in sales if row["status"] == "Completed"]
+            legacy_payments = db.execute(f"""
+                SELECT p.id, p.created_at, p.customer_id, p.description,
+                       p.amount_cents, p.method
+                FROM payments p
+                WHERE strftime('{grouping}', p.created_at) = ?
+                  AND {legacy_payment_filter}
+                ORDER BY p.created_at DESC, p.id DESC
+            """, (value,)).fetchall()
 
-        for p in periods:
-            mem_row = db.execute(f"""
-                SELECT COUNT(*) AS count, COALESCE(SUM(amount_cents), 0) AS cents
-                FROM payments
-                WHERE strftime('{grouping}', created_at) = ?
-            """, (p,)).fetchone()
-            mem_cents = mem_row["cents"] or 0
-            mem_tx = mem_row["count"] or 0
+            sales_cents = sum(row["total_cents"] for row in completed_sales)
+            legacy_cents = sum(row["amount_cents"] for row in legacy_payments)
+            total_cents = sales_cents + legacy_cents
+            total_transactions = len(completed_sales) + len(legacy_payments)
+            voided_count = sum(row["status"] == "Voided" for row in sales)
 
-            cat_rows = db.execute(f"""
-                SELECT si.category,
-                       COUNT(DISTINCT s.id) AS tx,
-                       COALESCE(SUM(si.line_amount_cents), 0) AS total_cents
-                FROM sale_items si
-                JOIN sales s ON s.id = si.sale_id
-                WHERE s.status = 'Completed' AND strftime('{grouping}', s.created_at) = ?
+            categories = {}
+            def add_category(category, cents_value, tx=1):
+                label = category if category in categories_order else "Other"
+                entry = categories.setdefault(label, {"cents": 0, "transactions": 0})
+                entry["cents"] += cents_value
+                entry["transactions"] += tx
+
+            sale_item_groups = db.execute(f"""
+                SELECT si.category, COUNT(DISTINCT s.id) AS transactions,
+                       COALESCE(SUM(si.line_amount_cents), 0) AS cents
+                FROM sale_items si JOIN sales s ON s.id = si.sale_id
+                WHERE s.status = 'Completed'
+                  AND strftime('{grouping}', s.created_at) = ?
                 GROUP BY si.category
-            """, (p,)).fetchall()
-            cat_map = {r["category"]: {"tx": r["tx"], "cents": r["total_cents"]} for r in cat_rows}
+            """, (value,)).fetchall()
+            for category in sale_item_groups:
+                add_category(category["category"], category["cents"], category["transactions"])
 
-            sales_row = db.execute(f"""
-                SELECT COUNT(*) AS count, COALESCE(SUM(total_cents), 0) AS cents
-                FROM sales
-                WHERE status = 'Completed' AND strftime('{grouping}', created_at) = ?
-            """, (p,)).fetchone()
-            sales_cents = sales_row["cents"] or 0
-            sales_tx = sales_row["count"] or 0
-
-            voided_count = db.execute(f"""
-                SELECT COUNT(*) FROM sales
-                WHERE status = 'Voided' AND strftime('{grouping}', created_at) = ?
-            """, (p,)).fetchone()[0]
-
-            categories = []
-            for cat in STANDARD_CATEGORIES:
-                c_cents = 0
-                c_tx = 0
-                if cat == "Membership":
-                    c_cents = mem_cents + cat_map.get("Membership", {}).get("cents", 0)
-                    c_tx = mem_tx + cat_map.get("Membership", {}).get("tx", 0)
+            for payment in legacy_payments:
+                purchased = db.execute("""
+                    SELECT pr.category, SUM(pu.quantity * pu.unit_price_cents) AS cents
+                    FROM purchases pu JOIN products pr ON pr.id = pu.product_id
+                    WHERE pu.payment_id = ?
+                    GROUP BY pr.category
+                """, (payment["id"],)).fetchall()
+                if purchased:
+                    # Split legacy bundled payments proportionally across categories.
+                    basis = sum(row["cents"] for row in purchased)
+                    remainder = payment["amount_cents"]
+                    for idx, part in enumerate(purchased):
+                        cents_value = (
+                            remainder if idx == len(purchased) - 1
+                            else payment["amount_cents"] * part["cents"] // basis
+                        )
+                        add_category(part["category"], cents_value)
+                        remainder -= cents_value
                 else:
-                    c_cents = cat_map.get(cat, {}).get("cents", 0)
-                    c_tx = cat_map.get(cat, {}).get("tx", 0)
-                if c_cents > 0 or c_tx > 0:
-                    categories.append({
-                        "category": cat,
-                        "transactions": c_tx,
-                        "amount": money(c_cents)
-                    })
+                    description = payment["description"].casefold()
+                    if "trainer" in description or "coach" in description:
+                        label = "Coaching"
+                    elif "monthly" in description or "daily session" in description:
+                        label = "Gym Access"
+                    elif "yearly" in description or "membership" in description:
+                        label = "Membership"
+                    else:
+                        label = "Other"
+                    add_category(label, payment["amount_cents"])
+
+            # Existing sales without an item row are still counted in revenue.
+            categorized_sale_cents = sum(row["cents"] for row in sale_item_groups)
+            if categorized_sale_cents < sales_cents:
+                add_category("Other", sales_cents - categorized_sale_cents, 0)
 
             tx_list = []
             if period == "daily":
-                sale_txs = db.execute("""
-                    SELECT id, receipt_no, created_at, customer_name, total_cents, status, kind
-                    FROM sales
-                    WHERE strftime('%Y-%m-%d', created_at) = ?
-                    ORDER BY created_at DESC, id DESC
-                """, (p,)).fetchall()
-                for s in sale_txs:
-                    time_str = s["created_at"][11:16] if len(s["created_at"]) >= 16 else s["created_at"]
-                    sold_items = db.execute(
+                for sale in sales:
+                    items = db.execute(
                         "SELECT item_name, quantity FROM sale_items WHERE sale_id = ? ORDER BY id",
-                        (s["id"],),
+                        (sale["id"],),
                     ).fetchall()
-                    item_names = [
+                    names = [
                         f"{item['quantity']} x {item['item_name']}" if item["quantity"] > 1 else item["item_name"]
-                        for item in sold_items
+                        for item in items
                     ]
-                    if s["kind"] == "trainer":
+                    if sale["kind"] == "trainer":
                         trainer = db.execute(
                             "SELECT session_label FROM trainer_sessions WHERE sale_id = ?",
-                            (s["id"],),
+                            (sale["id"],),
                         ).fetchone()
                         if trainer and trainer["session_label"]:
-                            item_names = [trainer["session_label"]]
+                            names = [trainer["session_label"]]
                     tx_list.append({
-                        "receipt_no": s["receipt_no"],
-                        "time": time_str,
-                        "item_name": ", ".join(item_names) or (s["kind"] or "Transaction").replace("_", " ").title(),
-                        "total": money(s["total_cents"]),
-                        "status": s["status"]
+                        "receipt_no": sale["receipt_no"],
+                        "time": sale["created_at"][11:16],
+                        "item_name": ", ".join(names) or (sale["kind"] or "Transaction").replace("_", " ").title(),
+                        "total": money(sale["total_cents"]),
+                        "status": sale["status"],
+                        "created_at": sale["created_at"],
                     })
-                mem_txs = db.execute("""
-                    SELECT p.id, p.created_at, p.amount_cents, p.description
-                    FROM payments p
-                    WHERE strftime('%Y-%m-%d', p.created_at) = ?
-                    ORDER BY p.created_at DESC, p.id DESC
-                """, (p,)).fetchall()
-                for m in mem_txs:
-                    time_str = m["created_at"][11:16] if len(m["created_at"]) >= 16 else m["created_at"]
+
+                for payment in legacy_payments:
+                    items = db.execute("""
+                        SELECT pr.name, pu.quantity FROM purchases pu
+                        JOIN products pr ON pr.id = pu.product_id
+                        WHERE pu.payment_id = ? ORDER BY pu.id
+                    """, (payment["id"],)).fetchall()
+                    names = [
+                        f"{item['quantity']} x {item['name']}" if item["quantity"] > 1 else item["name"]
+                        for item in items
+                    ]
                     tx_list.append({
-                        "receipt_no": f"PAY-{m['id']:04d}",
-                        "time": time_str,
-                        "item_name": m["description"].removeprefix("Plan Renewal: ").removeprefix("Plan: "),
-                        "total": money(m["amount_cents"]),
-                        "status": "Completed"
+                        "receipt_no": f"PAY-{payment['id']:06d}",
+                        "time": payment["created_at"][11:16],
+                        "item_name": ", ".join(names) or payment["description"].removeprefix("Plan Renewal: ").removeprefix("Plan: "),
+                        "total": money(payment["amount_cents"]),
+                        "status": "Completed",
+                        "created_at": payment["created_at"],
                     })
-                tx_list.sort(key=lambda x: x["time"], reverse=True)
+                tx_list.sort(key=lambda row: (row["created_at"], row["receipt_no"]), reverse=True)
+                for transaction in tx_list:
+                    transaction.pop("created_at")
 
-            total_tx = mem_tx + sales_tx
-            total_cents = mem_cents + sales_cents
-
-            prod_cents = sum(cat_map.get(c, {}).get("cents", 0) for c in ["Beverage", "Supplement", "Merchandise"])
-            serv_cents = total_cents - prod_cents
-            prod_tx = sum(cat_map.get(c, {}).get("tx", 0) for c in ["Beverage", "Supplement", "Merchandise"])
-            serv_tx = total_tx - prod_tx
+            category_rows = [
+                {
+                    "category": cat,
+                    "transactions": categories[cat]["transactions"],
+                    "amount": money(categories[cat]["cents"]),
+                }
+                for cat in categories_order if cat in categories
+            ]
+            product_cats = {"Beverage", "Supplement", "Merchandise"}
+            product_income = sum(row["cents"] for cat, row in categories.items() if cat in product_cats)
+            # A transaction can contain more than one category; the overall
+            # transaction count is unique receipts/payments, never summed category counts.
+            product_transactions = sum(
+                any(
+                    item["category"] in product_cats
+                    for item in db.execute(
+                        "SELECT category FROM sale_items WHERE sale_id = ?", (sale["id"],)
+                    ).fetchall()
+                )
+                for sale in completed_sales
+            ) + sum(
+                bool(db.execute("""
+                    SELECT 1 FROM purchases pu JOIN products pr ON pr.id = pu.product_id
+                    WHERE pu.payment_id = ? AND pr.category IN ('Beverage', 'Supplement', 'Merchandise')
+                    LIMIT 1
+                """, (payment["id"],)).fetchone())
+                for payment in legacy_payments
+            )
 
             records.append({
-                "period": p,
-                "categories": categories,
-                "total_transactions": total_tx,
+                "period": value,
+                "categories": category_rows,
+                "total_transactions": total_transactions,
                 "total_sales": money(total_cents),
                 "voided_count": voided_count,
                 "transactions": tx_list,
-                "service_income": money(serv_cents),
-                "product_income": money(prod_cents),
-                "service_transactions": serv_tx,
-                "product_transactions": prod_tx,
-                "total": money(total_cents)
+                "service_income": money(total_cents - product_income),
+                "product_income": money(product_income),
+                "service_transactions": total_transactions - product_transactions,
+                "product_transactions": product_transactions,
+                "total": money(total_cents),
             })
-
         return records
 
 
