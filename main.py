@@ -1860,7 +1860,8 @@ def refund_purchase_session():
 
         print(f"Refund method:  {method}")
         print(f"Refund amount:  {format_currency(sale['total'])}")
-        if not confirm("Record this full refund? (Y/N, 0 to cancel): "):
+        print("Return this amount to the customer manually before confirming.")
+        if not confirm("Have you issued this full refund? (Y/N, 0 to cancel): "):
             continue
         result = request("POST", f"/sales/{selected['record_id']}/refund", {
             "reason": reason,
@@ -1877,8 +1878,8 @@ def refund_purchase_session():
         print(f"Reason:           {result['reason']}")
         print(f"Date:             {result['created_at']}")
         print("-" * width)
-        print("Give the refund to the customer using the selected method.")
-        print("The system records this action but does not transfer funds.")
+        print("Manual refund acknowledged and recorded in the refund ledger.")
+        print("No payment-provider transfer was performed by this system.")
         pause()
         page = 1
         query = ""
