@@ -553,6 +553,22 @@ def wrap_cell(value, width):
     ) or ["-"]
 
 
+TABLE_SEPARATOR = "  |  "
+
+
+def table_width(columns, minimum=0):
+    return max(minimum, sum(col[2] for col in columns) + len(TABLE_SEPARATOR) * (len(columns) - 1))
+
+
+def print_table_header(columns):
+    cells = []
+    for col in columns:
+        label, width = col[0], col[2]
+        align = col[3] if len(col) > 3 else "left"
+        cells.append(format_cell(label, width, align))
+    print(TABLE_SEPARATOR.join(cells))
+
+
 def format_cell(value, width, align="left"):
     lines = wrap_cell(value, width)
     first = lines[0]
@@ -577,7 +593,7 @@ def print_table_row(rec, columns):
                 row_cells.append(txt.rjust(w) if align == "right" else txt.ljust(w))
             else:
                 row_cells.append(" " * w)
-        print(" | ".join(row_cells))
+        print(TABLE_SEPARATOR.join(row_cells))
 
 
 def mask_phone(phone: str) -> str:
@@ -605,45 +621,39 @@ def format_phone_display(phone):
 def page_nav_options(page, total_pages, include_back=True):
     nav = []
     if page < total_pages:
-        nav.append("[N] Next")
+        nav.append("[>] Next")
     if page > 1:
-        nav.append("[P] Previous")
+        nav.append("[<] Previous")
     if include_back:
         nav.append("[0] Back")
-    return "   ".join(nav)
+    return "        ".join(nav)
 
 
 def render_data_table(title, records, columns, page, width=None, always_show_back=False, banner=None, footer_text=None, cancel_label=False):
-    if width is None:
-        width = sum(col[2] for col in columns) + 3 * (len(columns) - 1)
+    width = table_width(columns, width or 0)
     total_records = len(records)
     total_pages = (total_records + PAGE_SIZE - 1) // PAGE_SIZE
     start = (page - 1) * PAGE_SIZE
     end = min(start + PAGE_SIZE, total_records)
 
     header(title, input_screen=False, width=width, banner=banner)
-    header_cells = []
-    for col in columns:
-        label, _, w = col[0], col[1], col[2]
-        align = col[3] if len(col) > 3 else "left"
-        header_cells.append(format_cell(label, w, align=align))
-    print(" | ".join(header_cells))
+    print_table_header(columns)
     print("-" * width)
 
     for rec in records[start:end]:
         print_table_row(rec, columns)
 
     print("-" * width)
-    print(f"Page {page} of {total_pages} | Showing {start + 1}-{end} of {total_records}")
+    print(f"Page {page} of {total_pages}    Showing {start + 1}-{end} of {total_records}")
     if footer_text:
         print(footer_text)
     if total_pages > 1 or always_show_back:
         if cancel_label:
             nav = []
             if page < total_pages:
-                nav.append("[N] Next")
+                nav.append("[>] Next")
             if page > 1:
-                nav.append("[P] Previous")
+                nav.append("[<] Previous")
             nav.append("[0] Cancel")
             print("   ".join(nav))
         else:
@@ -699,10 +709,10 @@ def select_customer_from_list(title, empty_action, eligibility=None, empty_messa
             low = value.lower()
             if low in ("0", "b", "back"):
                 raise GoBack()
-            if low in ("n", "next") and page < total_pages:
+            if low in (">", "n", "next") and page < total_pages:
                 page += 1
                 break
-            if low in ("p", "prev", "previous") and page > 1:
+            if low in ("<", "p", "prev", "previous") and page > 1:
                 page -= 1
                 break
             if value == "":
@@ -731,8 +741,7 @@ def select_customer_from_list(title, empty_action, eligibility=None, empty_messa
 
 
 def paginated_view(title, fetch_fn, columns, empty_message, sort_key="id", width=None, footer_fn=None):
-    if width is None:
-        width = sum(col[2] for col in columns) + 3 * (len(columns) - 1)
+    width = table_width(columns, width or 0)
 
     page = 1
     while True:
@@ -768,19 +777,19 @@ def paginated_view(title, fetch_fn, columns, empty_message, sort_key="id", width
             choice = input("Enter choice: ").strip().lower()
             if choice in ("0", "b", "back"):
                 raise GoBack()
-            if choice in ("n", "next") and page < total_pages:
+            if choice in (">", "n", "next") and page < total_pages:
                 page += 1
                 break
-            if choice in ("p", "prev", "previous") and page > 1:
+            if choice in ("<", "p", "prev", "previous") and page > 1:
                 page -= 1
                 break
 
             if page < total_pages and page > 1:
-                print("Invalid choice. Enter N, P, or 0.")
+                print("Invalid choice. Enter >, <, or 0.")
             elif page < total_pages:
-                print("Invalid choice. Enter N or 0.")
+                print("Invalid choice. Enter > or 0.")
             else:
-                print("Invalid choice. Enter P or 0.")
+                print("Invalid choice. Enter < or 0.")
 
 
 def render_view_customers_table(customers, page):
@@ -822,19 +831,19 @@ def view_customers():
             choice = input("Enter choice: ").strip().lower()
             if choice in ("0", "b", "back"):
                 raise GoBack()
-            if choice in ("n", "next") and page < total_pages:
+            if choice in (">", "n", "next") and page < total_pages:
                 page += 1
                 break
-            if choice in ("p", "prev", "previous") and page > 1:
+            if choice in ("<", "p", "prev", "previous") and page > 1:
                 page -= 1
                 break
 
             if page < total_pages and page > 1:
-                print("Invalid choice. Enter N, P, or 0.")
+                print("Invalid choice. Enter >, <, or 0.")
             elif page < total_pages:
-                print("Invalid choice. Enter N or 0.")
+                print("Invalid choice. Enter > or 0.")
             else:
-                print("Invalid choice. Enter P or 0.")
+                print("Invalid choice. Enter < or 0.")
 
 
 def update_customer():
@@ -1005,41 +1014,44 @@ def customer_overview():
         start_idx = (page - 1) * page_size
         page_customers = customers[start_idx:start_idx + page_size]
 
-        width = 68
+        cols = [
+            ("ID", "id", 4),
+            ("Customer", lambda row: f"{row.get('first_name', '')} {row.get('last_name', '')}".strip(), 26),
+            ("Yearly", lambda row: row.get("yearly_status") or "-", 12),
+            ("Monthly", lambda row: row.get("monthly_status") or "-", 12),
+            ("Last Visit", lambda row: row.get("last_visit") or "-", 12),
+        ]
+        width = table_width(cols, 90)
         header("CUSTOMER OVERVIEW", input_screen=False, width=width)
         if search_query:
             print(f"Filter: '{search_query}' (Enter empty search to reset)")
-        print(f"{'ID':<4} | {'Customer':<20} | {'Yearly':<11} | {'Monthly':<11} | {'Last Visit':<10}")
+        print_table_header(cols)
         print("-" * width)
         if not page_customers:
             print("No customers found.")
         else:
             for c in page_customers:
-                cname = f"{c.get('first_name', '')} {c.get('last_name', '')}".strip()[:20]
-                ystatus = c.get("yearly_status") or "-"
-                mstatus = c.get("monthly_status") or "-"
-                lvisit = c.get("last_visit") or "-"
-                print(f"{c['id']:<4} | {cname:<20} | {ystatus:<11} | {mstatus:<11} | {lvisit:<10}")
+                print_table_row(c, cols)
 
         print("-" * width)
         nav = [f"Page {page} of {total_pages}"]
         if page < total_pages:
-            nav.append("[N] Next")
+            nav.append("[>] Next")
         if page > 1:
-            nav.append("[P] Prev")
+            nav.append("[<] Prev")
         nav.append("[S] Search")
         nav.append("[0] Back")
-        print(" | ".join(nav))
+        print("        ".join(nav))
         print("-" * width)
         val = input("Enter Customer ID to view details (or choice): ").strip()
         low = val.lower()
 
         if low in ("0", "b", "back"):
             return
-        if low in ("n", "next") and page < total_pages:
+        if low in (">", "n", "next") and page < total_pages:
             page += 1
             continue
-        if low in ("p", "prev", "previous") and page > 1:
+        if low in ("<", "p", "prev", "previous") and page > 1:
             page -= 1
             continue
         if low in ("s", "search"):
@@ -1111,18 +1123,23 @@ def customer_details_view(customer_id):
 
 def view_customer_membership_history(customer_id, customer_name):
     mems = request("GET", f"/customers/{customer_id}/memberships") or []
-    width = 70
+    cols = [
+        ("ID", "id", 4), ("Plan", "plan", 24),
+        ("Start", "start_date", 10), ("End", "end_date", 10),
+        ("Status", "status", 12),
+        ("Receipt", lambda row: row.get("receipt_no") or "-", 12),
+    ]
+    width = table_width(cols, 96)
     header("MEMBERSHIP HISTORY", input_screen=False, width=width)
     print(f"Customer: {customer_name}")
     print("-" * width)
     if not mems:
         print("No membership history found.")
     else:
-        print(f"{'ID':<4} | {'Plan':<18} | {'Start':<10} | {'End':<10} | {'Status':<11} | {'Receipt':<8}")
+        print_table_header(cols)
         print("-" * width)
         for m in mems:
-            rc = m.get("receipt_no") or "-"
-            print(f"{m['id']:<4} | {m['plan'][:18]:<18} | {m['start_date']:<10} | {m['end_date']:<10} | {m['status']:<11} | {rc:<8}")
+            print_table_row(m, cols)
     print("-" * width)
     pause()
 
@@ -1130,7 +1147,14 @@ def view_customer_membership_history(customer_id, customer_name):
 def view_customer_purchase_history(customer_id, customer_name):
     while True:
         sales = request("GET", f"/customers/{customer_id}/sales") or []
-        width = 68
+        cols = [
+            ("Receipt No", "receipt_no", 12),
+            ("Date", lambda row: row.get("created_at", "")[:10], 12),
+            ("Items", lambda row: len(row.get("items", [])), 7),
+            ("Total", lambda row: format_currency(row["total"]), 12, "right"),
+            ("Status", "status", 12),
+        ]
+        width = table_width(cols, 88)
         header("PURCHASE HISTORY", input_screen=False, width=width)
         print(f"Customer: {customer_name}")
         print("-" * width)
@@ -1139,12 +1163,10 @@ def view_customer_purchase_history(customer_id, customer_name):
             print("-" * width)
             pause()
             return
-        print(f"{'Receipt No':<10} | {'Date':<10} | {'Items':<5} | {'Total':>9} | {'Status':<9}")
+        print_table_header(cols)
         print("-" * width)
-        for s in sales:
-            dt_str = s.get("created_at", "")[:10]
-            items_cnt = len(s.get("items", []))
-            print(f"{s['receipt_no']:<10} | {dt_str:<10} | {items_cnt:<5} | {format_currency(s['total']):>9} | {s['status']:<9}")
+        for sale in sales:
+            print_table_row(sale, cols)
         print("-" * width)
         print("Enter Receipt No / ID to view receipt, or [0] Back.")
         choice = input("Choice: ").strip()
@@ -1165,18 +1187,22 @@ def view_customer_purchase_history(customer_id, customer_name):
 
 def view_customer_visit_history(customer_id, customer_name):
     visits = request("GET", f"/customers/{customer_id}/visits") or []
-    width = 58
+    cols = [
+        ("ID", "id", 6),
+        ("Check-in Time", "check_in_at", 22),
+        ("Receipt", lambda row: row.get("receipt_no") or "-", 12),
+    ]
+    width = table_width(cols, 66)
     header("VISIT HISTORY", input_screen=False, width=width)
     print(f"Customer: {customer_name}")
     print("-" * width)
     if not visits:
         print("No visit history found.")
     else:
-        print(f"{'ID':<6} | {'Check-in Time':<20} | {'Receipt':<10}")
+        print_table_header(cols)
         print("-" * width)
-        for v in visits:
-            rc = v.get("receipt_no") or "-"
-            print(f"{v['id']:<6} | {v['check_in_at']:<20} | {rc:<10}")
+        for visit in visits:
+            print_table_row(visit, cols)
     print("-" * width)
     pause()
 
@@ -1937,7 +1963,7 @@ def view_products():
 
 def select_item_from_table(title, item_type="", name_header="Item Name", empty_message="There are no items to view.", eligibility=None, on_not_found=None, banner=None):
     columns = item_table_columns(name_header)
-    width = sum(col[2] for col in columns) + 3 * (len(columns) - 1)
+    width = table_width(columns)
     page = 1
 
     params = {}
@@ -1971,10 +1997,10 @@ def select_item_from_table(title, item_type="", name_header="Item Name", empty_m
             low = val.lower()
             if low in ("0", "b", "back"):
                 raise GoBack()
-            if low in ("n", "next") and page < total_pages:
+            if low in (">", "n", "next") and page < total_pages:
                 page += 1
                 break
-            if low in ("p", "prev", "previous") and page > 1:
+            if low in ("<", "p", "prev", "previous") and page > 1:
                 page -= 1
                 break
             if val == "":
@@ -2151,27 +2177,33 @@ def manage_purchase_cart(customer_id, customer_name, membership_label, cart):
         discount_str = quote_res.get("discount", "0.00")
         total_str = quote_res.get("total", "0.00")
 
-        header("PURCHASE CART", input_screen=False, width=64)
-        print("-" * 64)
-        print(f"{'No':<3} | {'Item Name':<22} | {'Qty':>3} | {'Unit':>8} | {'Disc':>7} | {'Total':>8}")
-        print("-" * 64)
+        cart_columns = [
+            ("No", "number", 3), ("Item Name", "name", 28),
+            ("Qty", "qty", 4, "right"), ("Unit", "unit", 10, "right"),
+            ("Disc", "discount", 9, "right"), ("Total", "total", 10, "right"),
+        ]
+        cart_width = table_width(cart_columns, 92)
+        header("PURCHASE CART", input_screen=False, width=cart_width)
+        print("-" * cart_width)
+        print_table_header(cart_columns)
+        print("-" * cart_width)
 
         for idx, it in enumerate(items, 1):
             print_table_row({
                 "number": idx, "name": it["name"], "qty": it["quantity"],
                 "unit": it["unit_price"], "discount": it["discount"],
                 "total": it["total"],
-            }, [
-                ("No", "number", 3), ("Item Name", "name", 22),
-                ("Qty", "qty", 3, "right"), ("Unit", "unit", 8, "right"),
-                ("Disc", "discount", 7, "right"), ("Total", "total", 8, "right"),
-            ])
-        print("-" * 64)
-        print(f"{'Subtotal:':<54} {format_currency(subtotal_str):>9}")
-        print(f"{'Discount:':<54} {format_currency(discount_str):>9}")
-        print(f"{'Total Due:':<54} {format_currency(total_str):>9}")
-        print("-" * 64)
-        print("[A] Add item  [R] Remove line  [C] Checkout  [0] Cancel sale")
+            }, cart_columns)
+        print("-" * cart_width)
+        print(f"{'Subtotal:':<78} {format_currency(subtotal_str):>12}")
+        print(f"{'Discount:':<78} {format_currency(discount_str):>12}")
+        print(f"{'Total Due:':<78} {format_currency(total_str):>12}")
+        print("-" * cart_width)
+        print()
+        print("PURCHASE ACTIONS")
+        print("  [A] Add Item           [R] Remove Item          [C] Checkout")
+        print("  [0] Cancel Sale")
+        print()
         choice = input("Enter choice: ").strip().lower()
 
         if choice in ("a", "add"):
@@ -2235,39 +2267,40 @@ def pick_purchase_items(customer_id, customer_name, membership_label, cart):
 
     page = 1
     total_pages = (len(eligible_items) + PAGE_SIZE - 1) // PAGE_SIZE
-    width = 62
+    item_columns = [
+        ("ID", "id", 4), ("Item Name", "name", 40),
+        ("Category", "category", 14),
+        ("Price", lambda item: format_currency(item["price"]), 12, "right"),
+    ]
+    width = table_width(item_columns, 90)
 
     while True:
         header("SELECT ITEM", input_screen=False, width=width)
-        print(f"{'ID':<4} | {'Item Name':<30} | {'Category':<12} | {'Price':>8}")
+        print_table_header(item_columns)
         print("-" * width)
 
         start = (page - 1) * PAGE_SIZE
         end = min(start + PAGE_SIZE, len(eligible_items))
         for p in eligible_items[start:end]:
-            print_table_row(p, [
-                ("ID", "id", 4), ("Item Name", "name", 30),
-                ("Category", "category", 12),
-                ("Price", lambda item: format_currency(item["price"]), 8, "right"),
-            ])
+            print_table_row(p, item_columns)
 
         print("-" * width)
         nav = [f"Page {page} of {total_pages}"]
         if page < total_pages:
-            nav.append("[N] Next")
+            nav.append("[>] Next")
         if page > 1:
-            nav.append("[P] Previous")
+            nav.append("[<] Previous")
         nav.append("[0] Done")
-        print(" | ".join(nav))
+        print("        ".join(nav))
 
         val = input("Enter item ID: ").strip()
         low = val.lower()
         if low in ("0", "done", "d", "b", "back"):
             return
-        if low in ("n", "next") and page < total_pages:
+        if low in (">", "n", "next") and page < total_pages:
             page += 1
             continue
-        if low in ("p", "prev", "previous") and page > 1:
+        if low in ("<", "p", "prev", "previous") and page > 1:
             page -= 1
             continue
         if val == "":
@@ -2454,29 +2487,35 @@ def identify_trainer_customer():
             page = 0
             while True:
                 total_pages = (len(matches) + PAGE_SIZE - 1) // PAGE_SIZE
-                header("MATCHING CUSTOMERS", input_screen=False, width=76)
+                columns = [
+                    ("ID", "id", 5),
+                    ("Customer", lambda row: f"{row['first_name']} {row['last_name']}", 30),
+                    ("Phone", lambda row: mask_phone(row.get("phone", "")), 14),
+                    ("Yearly", lambda row: row.get("yearly_status") or "None", 12),
+                ]
+                width = table_width(columns, 85)
+                header("MATCHING CUSTOMERS", input_screen=False, width=width)
                 print(f"Multiple customers are named {full_name}. Select the correct ID.")
-                print("-" * 76)
-                print(f"{'ID':<5} | {'Customer':<25} | {'Phone':<13} | {'Yearly':<12}")
-                print("-" * 76)
+                print("-" * width)
+                print_table_header(columns)
+                print("-" * width)
                 for cust in matches[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]:
-                    name = f"{cust['first_name']} {cust['last_name']}"[:25]
-                    print(f"{cust['id']:<5} | {name:<25} | {mask_phone(cust.get('phone', '')):<13} | {cust.get('yearly_status', 'None'):<12}")
-                print("-" * 76)
+                    print_table_row(cust, columns)
+                print("-" * width)
                 print(f"Page {page + 1} of {total_pages}")
                 if page + 1 < total_pages:
-                    print("[N] Next")
+                    print("[>] Next")
                 if page > 0:
-                    print("[P] Previous")
+                    print("[<] Previous")
                 print("[R] Register a different person with this name")
                 print("[0] Back")
                 pick = input("Customer ID or choice: ").strip().lower()
                 if pick in ("0", "b", "back"):
                     return None
-                if pick in ("n", "next") and page + 1 < total_pages:
+                if pick in (">", "n", "next") and page + 1 < total_pages:
                     page += 1
                     continue
-                if pick in ("p", "previous") and page > 0:
+                if pick in ("<", "p", "previous") and page > 0:
                     page -= 1
                     continue
                 if pick in ("r", "register"):
@@ -2893,7 +2932,8 @@ def search_transactions_ui():
     query = ""
     page = 1
     page_size = 5
-    width = 78
+    width = 98
+    history = []  # Previous category/search states; [0] returns one step at a time.
 
     while True:
         params = {"query": query} if query else None
@@ -2914,59 +2954,75 @@ def search_transactions_ui():
         visible = transactions[(page - 1) * page_size:page * page_size]
 
         header("SEARCH TRANSACTIONS", input_screen=False, width=width)
-        print(f"Category: {category_name} | {total} records | Page {page} of {total_pages}")
+        print(f"Category: {category_name}")
+        print(f"Records: {total}                    Page: {page} of {total_pages}")
         if query:
             for line in wrap_cell(f"Search: {query}", width):
                 print(line)
+        print()
         print("-" * width)
 
         if not visible:
             print("No transactions found for this category or search.")
         for transaction in visible:
             receipt = str(transaction["reference"])
-            name_lines = wrap_cell(transaction.get("item_names") or "Transaction", 43)
+            name_lines = wrap_cell(transaction.get("item_names") or "Transaction", 58)
             amount = format_currency(transaction["amount"])
 
-            print(f"{receipt:<12} {name_lines[0]:<43} {amount:>14}")
+            print(f"{receipt:<13}  {name_lines[0]:<58}  {amount:>14}")
             for continuation in name_lines[1:]:
-                print(f"{'':12} {continuation}")
+                print(f"{'':15}{continuation}")
 
             categories = transaction.get("categories", [])
             category_text = ", ".join(labels.get(cat, "Other") for cat in categories) or "Other"
             created = str(transaction["created_at"])[:16]
-            metadata = f"{created} | {category_text} | {transaction['status']}"
-            if transaction.get("customer_id") is not None:
-                metadata += (
-                    f" | {transaction['customer_name']} "
-                    f"(ID {transaction['customer_id']})"
-                )
+            metadata = f"Date: {created}     Category: {category_text}     Status: {transaction['status']}"
             for line in wrap_cell(metadata, width - 2):
                 print(f"  {line}")
+            if transaction.get("customer_id") is not None:
+                for line in wrap_cell(
+                    f"Customer: {transaction['customer_name']} (ID {transaction['customer_id']})",
+                    width - 2,
+                ):
+                    print(f"  {line}")
             print("-" * width)
 
-        print("FILTER  [1] Yearly  [2] Monthly  [3] Daily")
-        print("        [4] Trainer [5] Products [A] All")
-        print("NAV     [N] Next  [P] Previous [0] Back")
-        print("SEARCH  Type a name, item, service or receipt below.")
-        print("        For IDs use customer:3, item:8, payment:1")
-        print("        Press Enter to clear the search.")
+        print()
+        print("FILTER BY CATEGORY")
+        print("  [1] Yearly Membership      [2] Monthly Session       [3] Daily Session")
+        print("  [4] Trainer Service        [5] Products              [A] All Transactions")
+        print()
+        print("NAVIGATION")
+        print(f"  [<] Previous Page          [>] Next Page            [0] {'Previous View' if history else 'Back to Search Records'}")
+        print()
+        print("SEARCH / RECEIPT")
+        print("  Enter a customer name, product/service name, or receipt number.")
+        print("  For numeric IDs: customer:3    item:8    payment:1")
+        print("  Press Enter to clear the search.")
+        print()
         value = input("Choice / Search: ").strip()
         normalized = value.casefold()
 
         if normalized in ("0", "b", "back"):
+            if history:
+                selected_category, category_name, query, page = history.pop()
+                continue
             return
         if normalized in filters:
-            selected_category, category_name = filters[normalized]
-            page = 1
+            next_category, next_name = filters[normalized]
+            if next_category != selected_category:
+                history.append((selected_category, category_name, query, page))
+                selected_category, category_name = next_category, next_name
+                page = 1
             continue
-        if normalized in ("n", "next"):
+        if normalized in (">", "n", "next"):
             if page < total_pages:
                 page += 1
             else:
                 print("Already on the last page.")
                 pause()
             continue
-        if normalized in ("p", "prev", "previous"):
+        if normalized in ("<", "p", "prev", "previous"):
             if page > 1:
                 page -= 1
             else:
@@ -2974,8 +3030,10 @@ def search_transactions_ui():
                 pause()
             continue
         if not value:
-            query = ""
-            page = 1
+            if query:
+                history.append((selected_category, category_name, query, page))
+                query = ""
+                page = 1
             continue
 
         selected = next(
@@ -2991,8 +3049,10 @@ def search_transactions_ui():
             continue
 
         # Search stays within the selected category until [A] All is chosen.
-        query = value
-        page = 1
+        if value != query:
+            history.append((selected_category, category_name, query, page))
+            query = value
+            page = 1
 
 
 def view_sale_details(sale_id):
@@ -3002,7 +3062,14 @@ def view_sale_details(sale_id):
             pause()
             return
 
-        header("PURCHASE DETAILS", input_screen=False, width=64)
+        detail_columns = [
+            ("Item Name", "item_name", 40),
+            ("Qty", "quantity", 4, "right"),
+            ("Price", lambda row: format_currency(row["unit_price"]), 12, "right"),
+            ("Amount", lambda row: format_currency(row["line_amount"]), 12, "right"),
+        ]
+        detail_width = table_width(detail_columns, 86)
+        header("PURCHASE DETAILS", input_screen=False, width=detail_width)
         print(f"Receipt No:     {sale['receipt_no']}")
         print(f"Date & Time:    {sale['created_at']}")
         if str(sale.get("kind", "")).lower() != "product" or sale.get("customer_id") is not None:
@@ -3011,27 +3078,22 @@ def view_sale_details(sale_id):
         if sale["status"] == "Voided":
             print(f"Voided At:      {sale.get('voided_at', '-')}")
             print(f"Void Reason:    {sale.get('void_reason', '-')}")
-        print("-" * 64)
-        print(f"{'Item Name':<30} | {'Qty':>4} | {'Price':>10} | {'Amount':>10}")
-        print("-" * 64)
+        print("-" * detail_width)
+        print_table_header(detail_columns)
+        print("-" * detail_width)
         for it in sale.get("items", []):
-            print_table_row(it, [
-                ("Item Name", "item_name", 30),
-                ("Qty", "quantity", 4, "right"),
-                ("Price", lambda row: format_currency(row["unit_price"]), 10, "right"),
-                ("Amount", lambda row: format_currency(row["line_amount"]), 10, "right"),
-            ])
-        print("-" * 64)
+            print_table_row(it, detail_columns)
+        print("-" * detail_width)
         print(f"{'Total:':<46} {format_currency(sale['total']):>10}")
         print(f"Payment Method: {sale['payment_method']}")
         print(f"{'Amount Tendered:':<46} {format_currency(sale['amount_tendered']):>10}")
         print(f"{'Change:':<46} {format_currency(sale['change']):>10}")
-        print("=" * 64)
+        print("=" * detail_width)
 
         if sale["status"] == "Completed":
             print("[V] Void sale")
             print("[0] Back")
-            print("-" * 64)
+            print("-" * detail_width)
             choice = input("Choice: ").strip().lower()
             if choice in ("0", "b", "back"):
                 return
@@ -3080,20 +3142,29 @@ def display_sales_report(title, period):
     transaction_page = 1
     transaction_page_size = 8
     total_pages = len(data)
-    width = 78
+    width = 112
 
     while True:
         record = data[page - 1]
         header(title, input_screen=False, width=width)
         period_label = "Date" if period == "daily" else "Month"
         print(f"{period_label}: {record['period']}")
+        category_columns = [
+            ("Category", "category", 38),
+            ("Transactions", "transactions", 24, "right"),
+            ("Amount", lambda row: format_currency(row["amount"]), 30, "right"),
+        ]
         print("-" * width)
-        print(f"{'Category':<16} | {'Transactions':>12} | {'Amount':>16}")
+        print_table_header(category_columns)
         print("-" * width)
         for cat in record.get("categories", []):
-            print(f"{cat['category']:<16} | {cat['transactions']:>12} | {format_currency(cat['amount']):>16}")
+            print_table_row(cat, category_columns)
         print("-" * width)
-        print(f"{'Total sales':<16} | {record['total_transactions']:>12} | {format_currency(record['total_sales']):>16}")
+        print_table_row({
+            "category": "Total sales",
+            "transactions": record["total_transactions"],
+            "amount": record["total_sales"],
+        }, category_columns)
         print("-" * width)
         print(f"Voided sales excluded: {record.get('voided_count', 0)}")
 
@@ -3103,33 +3174,39 @@ def display_sales_report(title, period):
             tx_total_pages = max(1, (len(transactions) + transaction_page_size - 1) // transaction_page_size)
             transaction_page = min(transaction_page, tx_total_pages)
             begin_index = (transaction_page - 1) * transaction_page_size
-            print(f"\nTransactions: Page {transaction_page} of {tx_total_pages}")
-            print(f"{'Receipt No.':<12} | {'Time':<5} | {'Item Name':<30} | {'Total':>10} | {'Status':<9}")
+            transaction_columns = [
+                ("Receipt No.", "receipt_no", 12),
+                ("Time", "time", 8),
+                ("Item Name", "item_name", 40),
+                ("Total", lambda row: format_currency(row["total"]), 13, "right"),
+                ("Status", "status", 10),
+            ]
+            print(f"\nTransactions: Page {transaction_page} of {tx_total_pages}\n")
+            print_table_header(transaction_columns)
             print("-" * width)
             for tx in transactions[begin_index:begin_index + transaction_page_size]:
-                print_table_row(tx, [
-                    ("Receipt No.", "receipt_no", 12),
-                    ("Time", "time", 5),
-                    ("Item Name", "item_name", 30),
-                    ("Total", lambda row: format_currency(row["total"]), 10, "right"),
-                    ("Status", "status", 9),
-                ])
+                print_table_row(tx, transaction_columns)
 
         print("-" * width)
-        nav = [f"Period {page} of {total_pages}"]
-        if page < total_pages:
-            nav.append("[N] Next")
+        print(f"REPORT PERIOD   Page {page} of {total_pages}")
+        period_nav = []
         if page > 1:
-            nav.append("[P] Previous")
-        nav.append("[0] Back")
-        print(" | ".join(nav))
+            period_nav.append("[<<] Previous period")
+        if page < total_pages:
+            period_nav.append("[>>] Next period")
+        period_nav.append("[0] Back")
+        print("        ".join(period_nav))
+
         if tx_total_pages > 1:
+            print()
+            print(f"TRANSACTIONS    Page {transaction_page} of {tx_total_pages}")
             tx_nav = []
-            if transaction_page < tx_total_pages:
-                tx_nav.append("[>] Next transaction page")
             if transaction_page > 1:
-                tx_nav.append("[<] Previous transaction page")
-            print(" | ".join(tx_nav))
+                tx_nav.append("[<] Previous page")
+            if transaction_page < tx_total_pages:
+                tx_nav.append("[>] Next page")
+            print("        ".join(tx_nav))
+        print()
 
         choice = input("Choice: ").strip().lower()
         if choice in ("0", "b", "back"):
@@ -3140,11 +3217,11 @@ def display_sales_report(title, period):
         if choice == "<" and transaction_page > 1:
             transaction_page -= 1
             continue
-        if choice in ("n", "next") and page < total_pages:
+        if choice in (">>", "n", "next") and page < total_pages:
             page += 1
             transaction_page = 1
             continue
-        if choice in ("p", "prev", "previous") and page > 1:
+        if choice in ("<<", "p", "prev", "previous") and page > 1:
             page -= 1
             transaction_page = 1
             continue
