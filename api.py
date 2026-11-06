@@ -1785,8 +1785,14 @@ def list_sales(search: str = "", status: str = "", date: str = ""):
     params = []
 
     if status.strip():
-        query += " AND status = ?"
-        params.append(status.strip())
+        wanted = status.strip()
+        if wanted == "Refunded":
+            query += " AND status = 'Completed' AND EXISTS (SELECT 1 FROM refunds r WHERE r.sale_id = sales.id)"
+        elif wanted == "Completed":
+            query += " AND status = 'Completed' AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.sale_id = sales.id)"
+        else:
+            query += " AND status = ?"
+            params.append(wanted)
 
     if date.strip():
         query += " AND date(created_at) = date(?)"
@@ -2285,16 +2291,56 @@ def sales_report(period: str = "daily"):
 
 @app.get("/reports/payment-methods")
 def payment_methods_report():
+    """Net receipts by method, including manually recorded refund outflows."""
     with connect() as db:
-        records = rows(db.execute("""
-            SELECT method, COUNT(*) AS transactions,
-                   SUM(amount_cents) AS total_cents
-            FROM payments GROUP BY method
-        """))
+        totals = {
+            "Cash": {"method": "Cash", "transactions": 0, "total_cents": 0, "refunds_cents": 0},
+            "E-Wallet": {"method": "E-Wallet", "transactions": 0, "total_cents": 0, "refunds_cents": 0},
+        }
+        for row in db.execute("""
+            SELECT payment_method AS method, COUNT(*) AS n, SUM(total_cents) AS cents
+            FROM sales WHERE status = 'Completed' GROUP BY payment_method
+        """).fetchall():
+            item = totals[row["method"]]
+            item["transactions"] += row["n"]
+            item["total_cents"] += row["cents"]
 
-    for record in records:
-        record["total"] = money(record.pop("total_cents"))
-    return records
+        # Older membership payments without matching sales are still valid income.
+        legacy = db.execute("""
+            SELECT p.method, COUNT(*) AS n, SUM(p.amount_cents) AS cents
+            FROM payments p
+            WHERE NOT EXISTS (
+                SELECT 1 FROM memberships m JOIN sales s ON s.id = m.sale_id
+                WHERE m.customer_id = p.customer_id
+                  AND m.created_at = p.created_at
+                  AND m.amount_cents = p.amount_cents
+                  AND p.description IN ('Plan: ' || m.plan, 'Plan Renewal: ' || m.plan)
+            )
+            GROUP BY p.method
+        """).fetchall()
+        for row in legacy:
+            item = totals[row["method"]]
+            item["transactions"] += row["n"]
+            item["total_cents"] += row["cents"]
+
+        for row in db.execute("""
+            SELECT method, COUNT(*) AS n, SUM(amount_cents) AS cents
+            FROM refunds GROUP BY method
+        """).fetchall():
+            item = totals[row["method"]]
+            item["transactions"] += row["n"]
+            item["total_cents"] -= row["cents"]
+            item["refunds_cents"] = row["cents"]
+
+    return [
+        {
+            "method": item["method"],
+            "transactions": item["transactions"],
+            "total": money(item["total_cents"]),
+            "refunds": money(item["refunds_cents"]),
+        }
+        for item in totals.values() if item["transactions"]
+    ]
 
 
 @app.get("/reports/memberships")
