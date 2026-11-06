@@ -271,8 +271,9 @@ class TransactionSearchTests(unittest.TestCase):
         self.sale()
         with database.connect() as db:
             payment = db.execute(
-                "INSERT INTO payments (customer_id, description, amount_cents, method) "
-                "VALUES (?, 'Legacy service fee', 2500, 'Cash')", (cid,),
+                "INSERT INTO payments (customer_id, description, amount_cents, method, created_at) "
+                "VALUES (?, 'Legacy service fee', 2500, 'Cash', ?)",
+                (cid, ph_now().strftime("%Y-%m-%d %H:%M:%S")),
             )
             payment_id = payment.lastrowid
         row = api.sales_report("daily")[0]
