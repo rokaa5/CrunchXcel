@@ -344,6 +344,19 @@ def initialize_database():
         migrate_sales_and_memberships(db)
         add_column_if_missing(db, "trainer_sessions", "session_label", "TEXT")
         add_column_if_missing(db, "trainer_sessions", "cancelled_at", "TEXT")
+        db.execute("""CREATE TABLE IF NOT EXISTS app_users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('admin', 'staff'))
+        )""")
+        from auth_utils import hash_password
+        for username, role in (("admin", "admin"), ("staff", "staff")):
+            existing = db.execute("SELECT 1 FROM app_users WHERE username = ?", (username,)).fetchone()
+            if not existing:
+                db.execute(
+                    "INSERT INTO app_users(username, password_hash, role) VALUES (?, ?, ?)",
+                    (username, hash_password(username), role)
+                )
         seed_default_products(db)
         ensure_daily_session_product(db)
         seed_default_trainers(db)
