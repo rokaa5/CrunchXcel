@@ -3067,6 +3067,7 @@ def search_customer():
         print(f"Records: {len(matches)}    Page {page} of {pages}")
         if query:
             print(f"Search: {query}")
+        print("-" * 90)
         print_table_header(columns)
         for row in matches[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]:
             print_table_row(row, columns)
@@ -3315,13 +3316,17 @@ def daily_transactions():
     while True:
         header("DAILY TRANSACTIONS", input_screen=False, width=width)
         print(f"Transactions: {len(transactions)}    Page {page} of {pages}")
-        print(f"Gross Sales: {format_currency(gross)}    Refunds: -{format_currency(refunds)}    Net Sales: {format_currency(net)}")
         print("-" * width)
         print_table_header(columns)
         print("-" * width)
         for record in transactions[(page - 1) * page_size:page * page_size]:
             print_table_row(record, columns)
         print("-" * width)
+        print(f"Gross Sales:       {format_currency(gross)}")
+        print(f"Refunds Issued:    -{format_currency(refunds)}")
+        print(f"Net Sales:         {format_currency(net)}")
+        print("-" * width)
+        print()
 
         if pages == 1:
             pause()
