@@ -3559,12 +3559,15 @@ def login_screen():
     global AUTH_TOKEN, CURRENT_ROLE
     while True:
         header("CRUNCH X FITNESS - LOGIN")
+        print("Username:")
+        print("Password:")
+        print("-" * 55)
         print("[0] Exit")
         print("-" * 55)
-        username = input("Username: ").strip()
+        username = input("Enter username: ").strip()
         if username == "0":
             return False
-        password = input("Password: ")
+        password = input("Enter password: ")
         if password == "0":
             return False
         try:
