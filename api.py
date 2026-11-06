@@ -1271,7 +1271,7 @@ def create_daily_session(data: DailySessionCreate):
             existing = db.execute("SELECT id FROM sales WHERE request_id = ?", (data.request_id,)).fetchone()
             if existing:
                 res = get_sale_formatted(db, existing[0])
-                res["checked_in"] = True
+                res["checked_in"] = res["customer_id"] is not None
                 return res
 
         prod = db.execute(
@@ -1327,13 +1327,16 @@ def create_daily_session(data: DailySessionCreate):
                 it["unit_price_cents"], it["quantity"], it["total_cents"], it["discount_cents"]
             ))
 
-        db.execute("""
-            INSERT INTO visits (customer_id, check_in_at, used, sale_id)
-            VALUES (?, ?, 1, ?)
-        """, (data.customer_id, created_at_str, sale_id))
+        # Anonymous daily purchases have no customer ID. Keep the paid sale
+        # and receipt without inserting an invalid customer-linked visit.
+        if data.customer_id is not None:
+            db.execute("""
+                INSERT INTO visits (customer_id, check_in_at, used, sale_id)
+                VALUES (?, ?, 1, ?)
+            """, (data.customer_id, created_at_str, sale_id))
 
         res = get_sale_formatted(db, sale_id)
-        res["checked_in"] = True
+        res["checked_in"] = data.customer_id is not None
         return res
 
 
