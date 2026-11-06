@@ -7,11 +7,14 @@ import textwrap
 import unicodedata
 import uuid
 import requests
+import getpass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from models import CATEGORY_TO_TYPE, PRODUCT_CATEGORIES, clean_phone, ph_now, ph_today
 
 API = "http://127.0.0.1:8000"
+AUTH_TOKEN = None
+CURRENT_ROLE = None
 PAGE_SIZE = 10
 ITEM_NAME_WIDTH = 40
 MAX_ITEM_NAME_LENGTH = 80
@@ -229,6 +232,7 @@ def request(method, endpoint, data=None, params=None, silent_404=False):
             API + endpoint,
             json=data,
             params=params,
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"} if AUTH_TOKEN else {},
             timeout=10
         )
 
@@ -1011,6 +1015,9 @@ def delete_customer():
 
 
 def customer_management():
+    if CURRENT_ROLE == "staff":
+        submenu("CUSTOMER MANAGEMENT", [("View All Customers", view_customers)])
+        return
     submenu("CUSTOMER MANAGEMENT", [
         ("View All Customers", view_customers),
         ("Update Customer Information", update_customer),
@@ -1951,6 +1958,15 @@ def refund_history():
 
 
 def product_service_management():
+    if CURRENT_ROLE == "staff":
+        submenu("PRODUCT/SERVICE MANAGEMENT", [
+            ("Yearly Membership", yearly_membership_menu),
+            ("Monthly Session", monthly_session_menu),
+            ("Daily Session", daily_session_flow),
+            ("Services/Products", services_products_menu),
+            ("Customer Overview", customer_overview),
+        ])
+        return
     submenu("PRODUCT/SERVICE MANAGEMENT", [
         ("Yearly Membership", yearly_membership_menu),
         ("Monthly Session", monthly_session_menu),
@@ -3042,6 +3058,13 @@ def trainer_session_flow():
 
 
 def services_products_menu():
+    if CURRENT_ROLE == "staff":
+        submenu("SERVICES/PRODUCTS", [
+            ("Product Purchase", record_purchase),
+            ("Book Trainer Session", trainer_session_flow),
+            ("View Products and Services", view_products),
+        ])
+        return
     submenu("SERVICES/PRODUCTS", [
         ("Product Purchase", record_purchase),
         ("Book Trainer Session", trainer_session_flow),
@@ -3532,14 +3555,50 @@ def sales_reports():
 
 # MAIN MENU
 
+def login_screen():
+    global AUTH_TOKEN, CURRENT_ROLE
+    while True:
+        header("CRUNCH X FITNESS - LOGIN")
+        username = input("Username [0 to exit]: ").strip()
+        if username == "0":
+            return False
+        password = getpass.getpass("Password: ")
+        try:
+            response = requests.post(
+                API + "/auth/login",
+                json={"username": username, "password": password},
+                timeout=10,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                AUTH_TOKEN = data["token"]
+                CURRENT_ROLE = data["role"]
+                return True
+            print("Invalid username or password.")
+        except requests.RequestException:
+            print("Cannot connect to the API. Start the server first.")
+        pause()
+
+
 def main():
-    submenu("GYM MANAGEMENT SYSTEM", [
+    global AUTH_TOKEN, CURRENT_ROLE
+    if not login_screen():
+        return
+    options = [
+
         ("Product/Service Management", product_service_management),
         ("Customer Management", customer_management),
         ("Payment Management", payment_management),
         ("Search Records", search_records),
         ("Sales Reports", sales_reports),
-    ])
+    ]
+    submenu("GYM MANAGEMENT SYSTEM", options)
+    try:
+        requests.post(API + "/auth/logout", headers={"Authorization": f"Bearer {AUTH_TOKEN}"}, timeout=5)
+    except requests.RequestException:
+        pass
+    AUTH_TOKEN = None
+    CURRENT_ROLE = None
 
     clear_screen()
     print("Thank you for using Gym Management System.")
