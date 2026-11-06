@@ -2855,174 +2855,97 @@ def search_customer_id():
     pause()
 
 
-def search_payment():
-    """Find recorded purchases and services by customer, item, or payment reference."""
-    scopes = {
-        "1": ("customer", "Customer name or ID"),
-        "2": ("item", "Product or service name or ID"),
-        "3": ("payment", "Payment ID or receipt number"),
-    }
+def show_legacy_payment_details(transaction):
+    header("PAYMENT DETAILS", input_screen=False, width=80)
+    print(f"Reference:       {transaction['reference']}")
+    print(f"Date:            {transaction['created_at']}")
+    if transaction.get("customer_id") is not None:
+        print(f"Customer:        {transaction['customer_name']}")
+        print(f"Customer ID:     {transaction['customer_id']}")
+    print("Product / Service:")
+    for line in wrap_cell(transaction["item_names"], 76):
+        print(f"  {line}")
+    print(f"Payment Method:  {transaction['payment_method']}")
+    print(f"Amount:          {format_currency(transaction['amount'])}")
+    print(f"Status:          {transaction['status']}")
+    pause()
+
+
+def search_transactions_ui():
+    """Show every receipt first, with a single search box below the table."""
+    query = ""
+    page = 1
+    page_size = 8
+    width = 80
+    columns = [
+        ("Receipt No.", "reference", 12),
+        ("Date/Time", lambda r: r["created_at"][5:16], 11),
+        ("Product/Service", "item_names", 25),
+        ("Amount", lambda r: format_currency(r["amount"]), 10, "right"),
+        ("Status", "status", 9),
+    ]
 
     while True:
-        header("SEARCH TRANSACTIONS", input_screen=False, width=78)
-        print("[1] Customer Name or ID")
-        print("[2] Product / Service Name or ID")
-        print("[3] Payment ID or Receipt Number")
-        print("-" * 78)
-        print("[0] Back")
-        print("-" * 78)
-        selection = input("Choice: ").strip().lower()
-        if selection in ("0", "b", "back"):
+        params = {"query": query} if query else None
+        transactions = request("GET", "/transactions/search", params=params)
+        if transactions is None:
+            pause()
             return
-        if selection not in scopes:
-            print("Invalid choice.")
-            pause()
+
+        total = len(transactions)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = min(page, total_pages)
+        start = (page - 1) * page_size
+        visible = transactions[start:start + page_size]
+
+        header("SEARCH TRANSACTIONS", input_screen=False, width=width)
+        if query:
+            print(f"Search: {query}")
+        else:
+            print("All purchases, memberships and trainer services")
+        print(f"Transactions: {total} | Page {page} of {total_pages}")
+        print("-" * width)
+        print(" | ".join(format_cell(col[0], col[2], col[3] if len(col) > 3 else "left") for col in columns))
+        print("-" * width)
+        if visible:
+            for transaction in visible:
+                print_table_row(transaction, columns)
+        else:
+            print("No matching transactions found.")
+        print("-" * width)
+        print(page_nav_options(page, total_pages))
+        print("Enter a name, product/service, customer/item ID, or receipt to search.")
+        print("Enter an exact R-/PAY- receipt from the results to view its details.")
+        print("Press Enter to show all transactions.")
+        value = input("Search or Receipt: ").strip()
+        normalized = value.lower()
+        if normalized in ("0", "b", "back"):
+            return
+        if normalized in ("n", "next") and page < total_pages:
+            page += 1
+            continue
+        if normalized in ("p", "prev", "previous") and page > 1:
+            page -= 1
+            continue
+        if not value:
+            query = ""
+            page = 1
             continue
 
-        scope, label = scopes[selection]
-        header("SEARCH TRANSACTIONS", input_screen=False, width=78)
-        print(f"Search by: {label}")
-        print("[0] Back")
-        print("-" * 78)
-        term = input("Search: ").strip()
-        if term.lower() in ("0", "b", "back"):
-            continue
-        if not term:
-            print("Enter a search term.")
-            pause()
-            continue
-
-        records = request(
-            "GET", "/transactions/search",
-            params={"scope": scope, "query": term},
+        selected = next(
+            (row for row in transactions if row["reference"].lower() == normalized),
+            None,
         )
-        if records is None:
-            pause()
-            continue
-        if not records:
-            header("SEARCH RESULTS", input_screen=False, width=78)
-            print(f"No transactions found for '{term}'.")
-            pause()
-            continue
-
-        page = 1
-        page_size = 5
-        while True:
-            total_pages = (len(records) + page_size - 1) // page_size
-            header("TRANSACTION RESULTS", input_screen=False, width=78)
-            print(f"{label}: {term}")
-            print(f"Matches: {len(records)} | Page {page} of {total_pages}")
-            print("-" * 78)
-            start = (page - 1) * page_size
-            for transaction in records[start:start + page_size]:
-                print(
-                    f"{transaction['reference']}  "
-                    f"{transaction['created_at'][:16]}  "
-                    f"{format_currency(transaction['amount'])}  "
-                    f"[{transaction['status']}]"
-                )
-                if transaction.get("customer_id") is not None:
-                    print(
-                        f"  Customer: {transaction['customer_name']} "
-                        f"(ID {transaction['customer_id']})"
-                    )
-                else:
-                    print("  Customer: Anonymous")
-                for item_line in wrap_cell(transaction["item_names"], 73):
-                    print(f"  {item_line}")
-                print(f"  Payment: {transaction['payment_method']}")
-                print("-" * 78)
-
-            print(page_nav_options(page, total_pages, include_back=True))
-            print("Enter a receipt/payment reference to view details.")
-            val = input("Reference or choice: ").strip().lower()
-            if val in ("0", "b", "back"):
-                break
-            if val in ("n", "next") and page < total_pages:
-                page += 1
-                continue
-            if val in ("p", "prev", "previous") and page > 1:
-                page -= 1
-                continue
-
-            selected = next(
-                (tx for tx in records if tx["reference"].lower() == val),
-                None,
-            )
-            if selected is None:
-                print("That reference is not in the search results.")
-                pause()
-                continue
+        if selected:
             if selected["record_type"] == "sale":
                 view_sale_details(selected["record_id"])
-                continue
-
-            header("PAYMENT DETAILS", input_screen=False, width=78)
-            print(f"Reference:       {selected['reference']}")
-            print(f"Date:            {selected['created_at']}")
-            print(f"Customer:        {selected['customer_name']}")
-            if selected.get("customer_id") is not None:
-                print(f"Customer ID:     {selected['customer_id']}")
-            print("Items / Services:")
-            for line in wrap_cell(selected["item_names"], 74):
-                print(f"  {line}")
-            print(f"Payment Method:  {selected['payment_method']}")
-            print(f"Amount:          {format_currency(selected['amount'])}")
-            print(f"Status:          {selected['status']}")
-            pause()
-
-
-def search_purchases():
-    query = ""
-    while True:
-        params = {}
-        if query:
-            params["search"] = query
-        sales = request("GET", "/sales", params=params)
-        if sales is None:
-            pause()
-            return
-
-        header("SEARCH PURCHASES", input_screen=True, width=72)
-        if query:
-            print(f"Filter: '{query}'")
-            print("-" * 72)
-
-        if not sales:
-            print("No matching purchases found.")
-            print("-" * 72)
-        else:
-            print(f"{'Receipt No':<10} | {'Date & Time':<16} | {'Customer':<20} | {'Total':>8} | {'Status':<9}")
-            print("-" * 72)
-            for s in sales[:10]:
-                dt_str = s["created_at"][:16] if len(s["created_at"]) >= 16 else s["created_at"]
-                cust_str = s["customer_name"][:20]
-                status_str = s["status"]
-                print(f"{s['receipt_no']:<10} | {dt_str:<16} | {cust_str:<20} | {format_currency(s['total']):>8} | {status_str:<9}")
-            print("-" * 72)
-            if len(sales) > 10:
-                print(f"Showing top 10 of {len(sales)} results.")
-
-        print("Enter Receipt No / ID to view details, a search term to filter, or [0] Back.")
-        try:
-            val = ask("Search or Receipt/ID: ", allow_blank=True)
-        except GoBack:
-            return
-
-        if not val:
-            query = ""
+            else:
+                show_legacy_payment_details(selected)
             continue
 
-        selected_sale = None
-        for s in sales:
-            if val.lower() == s["receipt_no"].lower() or (val.isdigit() and int(val) == s["id"]):
-                selected_sale = s
-                break
-
-        if selected_sale:
-            view_sale_details(selected_sale["id"])
-        else:
-            query = val
+        # Optional prefixes such as item:8 or customer:2 resolve ID collisions.
+        query = value
+        page = 1
 
 
 def view_sale_details(sale_id):
@@ -3088,8 +3011,7 @@ def search_records():
     submenu("SEARCH RECORDS", [
         ("Search Customer by Name", search_customer),
         ("Search Customer by ID", search_customer_id),
-        ("Search Transactions", search_payment),
-        ("Search Purchase", search_purchases)
+        ("Search Transactions", search_transactions_ui)
     ])
 
 
