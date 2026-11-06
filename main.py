@@ -3555,6 +3555,30 @@ def sales_reports():
 
 # MAIN MENU
 
+def read_masked_password(prompt):
+    if os.name != "nt" or not sys.stdin.isatty():
+        return getpass.getpass(prompt)
+    import msvcrt
+    print(prompt, end="", flush=True)
+    chars = []
+    while True:
+        char = msvcrt.getwch()
+        if char in ("\\r", "\\n"):
+            print()
+            return "".join(chars)
+        if char == "\\x03":
+            raise KeyboardInterrupt
+        if char in ("\\b", "\\x7f"):
+            if chars:
+                chars.pop()
+                print("\\b \\b", end="", flush=True)
+        elif char in ("\\x00", "\\xe0"):
+            msvcrt.getwch()
+        elif char.isprintable():
+            chars.append(char)
+            print("*", end="", flush=True)
+
+
 def login_screen():
     global AUTH_TOKEN, CURRENT_ROLE
     while True:
@@ -3562,7 +3586,7 @@ def login_screen():
         username = input("Username [0 to exit]: ").strip()
         if username == "0":
             return False
-        password = getpass.getpass("Password: ")
+        password = read_masked_password("Password: ")
         try:
             response = requests.post(
                 API + "/auth/login",
