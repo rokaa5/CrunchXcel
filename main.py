@@ -515,15 +515,20 @@ def print_receipt(sale, width=58):
     header("RECEIPT", input_screen=False, width=width)
     print(f"Receipt no.: {sale.get('receipt_no', '-')}")
     print(f"Date:        {sale.get('created_at', '-')}")
-    print(f"Customer:    {sale.get('customer_name', 'Walk-in')}")
-    if sale.get("customer_id") is not None:
-        print(f"Customer ID: {sale['customer_id']}")
+    if sale.get("kind") != "product" or sale.get("customer_id") is not None:
+        print(f"Customer:    {sale.get('customer_name', 'Walk-in')}")
+        if sale.get("customer_id") is not None:
+            print(f"Customer ID: {sale['customer_id']}")
     print("-" * width)
     for it in sale.get("items", []):
-        disc_val = Decimal(str(it.get("discount", 0)))
-        disc_str = f" (-{format_currency(it['discount'])})" if disc_val > 0 else ""
-        line = f"{it['item_name'][:24]:<24} {it['quantity']} x {format_currency(it['unit_price']):>7}{disc_str}  {format_currency(it['line_amount']):>8}"
-        print(line)
+        for name_line in wrap_cell(it["item_name"], width - 4):
+            print(f"  {name_line}")
+        print(
+            f"  {it['quantity']} x {format_currency(it['unit_price'])} = "
+            f"{format_currency(it['line_amount'])}"
+        )
+        if Decimal(str(it.get("discount", 0))) > 0:
+            print(f"  Discount: -{format_currency(it['discount'])}")
     print("-" * width)
     disc_total = Decimal(str(sale.get("discount", 0)))
     if disc_total > 0:
@@ -2973,19 +2978,25 @@ def view_sale_details(sale_id):
             pause()
             return
 
-        header("PURCHASE DETAILS", input_screen=False, width=60)
+        header("PURCHASE DETAILS", input_screen=False, width=64)
         print(f"Receipt No:     {sale['receipt_no']}")
         print(f"Date & Time:    {sale['created_at']}")
-        print(f"Customer:       {sale['customer_name']} ({sale['customer_type']})")
+        if sale.get("kind") != "product" or sale.get("customer_id") is not None:
+            print(f"Customer:       {sale['customer_name']} ({sale['customer_type']})")
         print(f"Status:         {sale['status']}")
         if sale["status"] == "Voided":
             print(f"Voided At:      {sale.get('voided_at', '-')}")
             print(f"Void Reason:    {sale.get('void_reason', '-')}")
         print("-" * 60)
-        print(f"{'Item Name':<30} {'Qty':>4} {'Price':>10} {'Amount':>10}")
-        print("-" * 60)
+        print(f"{'Item Name':<30} | {'Qty':>4} | {'Price':>10} | {'Amount':>10}")
+        print("-" * 64)
         for it in sale.get("items", []):
-            print(f"{it['item_name'][:30]:<30} {it['quantity']:>4} {format_currency(it['unit_price']):>10} {format_currency(it['line_amount']):>10}")
+            print_table_row(it, [
+                ("Item Name", "item_name", 30),
+                ("Qty", "quantity", 4, "right"),
+                ("Price", lambda row: format_currency(row["unit_price"]), 10, "right"),
+                ("Amount", lambda row: format_currency(row["line_amount"]), 10, "right"),
+            ])
         print("-" * 60)
         print(f"{'Total:':<46} {format_currency(sale['total']):>10}")
         print(f"Payment Method: {sale['payment_method']}")
@@ -3045,7 +3056,7 @@ def display_sales_report(title, period):
 
     page = 1
     total_pages = len(data)
-    width = 60
+    width = 78
 
     while True:
         record = data[page - 1]
@@ -3064,10 +3075,16 @@ def display_sales_report(title, period):
 
         if period == "daily" and record.get("transactions"):
             print("\nTransactions:")
-            print(f"{'Receipt No.':<12} | {'Time':<5} | {'Customer':<20} | {'Total':>8} | {'Status':<9}")
+            print(f"{'Receipt No.':<12} | {'Time':<5} | {'Item Name':<30} | {'Total':>10} | {'Status':<9}")
             print("-" * width)
             for tx in record["transactions"][:10]:
-                print(f"{tx['receipt_no']:<12} | {tx['time']:<5} | {tx['customer'][:20]:<20} | {format_currency(tx['total']):>8} | {tx['status']:<9}")
+                print_table_row(tx, [
+                    ("Receipt No.", "receipt_no", 12),
+                    ("Time", "time", 5),
+                    ("Item Name", "item_name", 30),
+                    ("Total", lambda row: format_currency(row["total"]), 10, "right"),
+                    ("Status", "status", 9),
+                ])
             if len(record["transactions"]) > 10:
                 print(f"... and {len(record['transactions']) - 10} more transactions.")
 
