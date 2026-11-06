@@ -451,23 +451,24 @@ def guard_customers(action, title, input_screen=True):
 
 # CUSTOMER MANAGEMENT
 
+def collect_new_customer_data(title="REGISTER CUSTOMER"):
+    """Validate personal details without creating a record before purchase confirmation."""
+    header(title, input_screen=True)
+    print("Enter the customer's information.")
+    print("-" * 55)
+    return {
+        "first_name": ask_name("First name", prompt="First name: "),
+        "last_name": ask_name("Last name", prompt="Last name: "),
+        "phone": ask_phone("Phone: "),
+    }
+
+
 def add_customer():
-    header("REGISTER CUSTOMER", input_screen=True)
-
-    first_name = ask_name("First name")
-    last_name = ask_name("Last name")
-    phone = ask_phone("Phone: ")
-
-    result = request("POST", "/customers", {
-        "first_name": first_name,
-        "last_name": last_name,
-        "phone": phone
-    })
-
+    details = collect_new_customer_data()
+    result = request("POST", "/customers", details)
     if result:
         print("\nCustomer registered successfully!")
         print(f"Customer ID: {result['id']}")
-
     pause()
 
 
@@ -867,23 +868,23 @@ def update_customer():
         print(f"First Name: {current['first_name']}")
         print(f"Last Name: {current['last_name']}")
         print(f"Phone: {current['phone']}")
-        print("\nLeave blank to keep existing information (0 to cancel).\n")
+        print("\nLeave blank to keep existing information. Enter 0 at any prompt to cancel.\n")
 
         try:
             first_name = ask_name(
                 "First name",
-                prompt="New First name (0 to cancel): ",
+                prompt="New First name: ",
                 allow_blank=True
             )
 
             last_name = ask_name(
                 "Last name",
-                prompt="New Last name (0 to cancel): ",
+                prompt="New Last name: ",
                 allow_blank=True
             )
 
             phone = ask_phone(
-                "New Phone (0 to cancel): ",
+                "New Phone: ",
                 allow_blank=True
             )
         except GoBack:
@@ -1241,25 +1242,43 @@ def register_plan(plan_name):
             print("\nThis customer already has a monthly session. Use Renew instead.")
         pause()
 
-    banner = None
     while True:
-        try:
-            customer = select_customer_from_list(
-                title,
-                "register a membership",
-                eligibility=eligibility,
-                empty_message=empty_msg,
-                columns=cols,
-                width=56,
-                on_not_found=on_not_found,
-                banner=banner
-            )
-        except GoBack:
-            break
-        banner = None
+        header(title, input_screen=False, width=58)
+        print("[1] Select Existing Customer")
+        print("[2] Register New Customer")
+        print("-" * 58)
+        print("[0] Back")
+        print("-" * 58)
+        option = input("Choice: ").strip().lower()
+        if option in ("0", "b", "back"):
+            return
 
-        if not customer:
-            break
+        new_customer = None
+        if option == "1":
+            try:
+                customer = select_customer_from_list(
+                    title,
+                    "register a membership",
+                    eligibility=eligibility,
+                    empty_message=empty_msg,
+                    columns=cols,
+                    width=56,
+                    on_not_found=on_not_found,
+                )
+            except GoBack:
+                continue
+            if not customer:
+                continue
+        elif option == "2":
+            try:
+                new_customer = collect_new_customer_data("REGISTER NEW CUSTOMER")
+            except GoBack:
+                continue
+            customer = {"id": None, **new_customer}
+        else:
+            print("Invalid choice.")
+            pause()
+            continue
 
         start = ph_today()
         end = term_calc(start)
@@ -1323,6 +1342,7 @@ def register_plan(plan_name):
             "/memberships",
             {
                 "customer_id": customer["id"],
+                "new_customer": new_customer,
                 "plan": plan_name,
                 "start_date": str(start),
                 "end_date": str(end),
@@ -1334,6 +1354,8 @@ def register_plan(plan_name):
 
         if result:
             print("\nMembership registered successfully!")
+            if new_customer is not None:
+                print(f"New Customer ID: {result['customer_id']}")
             if "sale" in result:
                 print_receipt(result["sale"])
             else:
