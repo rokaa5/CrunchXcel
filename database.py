@@ -317,6 +317,18 @@ def initialize_database():
             FOREIGN KEY(sale_id) REFERENCES sales(id)
         );
 
+        CREATE TABLE IF NOT EXISTS refunds (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sale_id INTEGER NOT NULL UNIQUE,
+            amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+            method TEXT NOT NULL CHECK(method IN ('Cash', 'E-Wallet')),
+            reason TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(sale_id) REFERENCES sales(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_refunds_created_at ON refunds(created_at);
+
         CREATE TABLE IF NOT EXISTS discount_rules (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             product_id INTEGER NOT NULL,
@@ -331,6 +343,7 @@ def initialize_database():
         migrate_products_table(db)
         migrate_sales_and_memberships(db)
         add_column_if_missing(db, "trainer_sessions", "session_label", "TEXT")
+        add_column_if_missing(db, "trainer_sessions", "cancelled_at", "TEXT")
         seed_default_products(db)
         ensure_daily_session_product(db)
         seed_default_trainers(db)

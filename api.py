@@ -33,7 +33,7 @@ from models import (
     PurchaseItem,
     SaleCreate,
     SaleLineItemCreate,
-    SaleVoid,
+    RefundCreate,
     Trainer,
     TrainerSessionCreate,
     DailySessionCreate,
@@ -504,12 +504,14 @@ def get_customer_overview(customer_id: int):
             discount_eligibility = "Standard / None"
 
         total_purchases = db.execute(
-            "SELECT COUNT(*) FROM sales WHERE customer_id = ? AND status = 'Completed'",
+            """SELECT COUNT(*) FROM sales s WHERE customer_id = ? AND status = 'Completed'
+               AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.sale_id = s.id)""",
             (customer_id,)
         ).fetchone()[0]
 
         sales_cents = db.execute(
-            "SELECT COALESCE(SUM(total_cents), 0) FROM sales WHERE customer_id = ? AND status = 'Completed'",
+            """SELECT COALESCE(SUM(total_cents), 0) FROM sales s WHERE customer_id = ? AND status = 'Completed'
+               AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.sale_id = s.id)""",
             (customer_id,)
         ).fetchone()[0]
 
@@ -589,6 +591,7 @@ def get_customer_sales(customer_id: int):
         """, (customer_id,)))
         for s in sales_rows:
             sale_id = s["id"]
+            s["status"] = display_sale_status(db, sale_id, s["status"])
             items = rows(db.execute("SELECT * FROM sale_items WHERE sale_id = ?", (sale_id,)))
             s["total"] = money(s.pop("total_cents"))
             s["amount_tendered"] = money(s.pop("amount_tendered_cents"))
@@ -960,7 +963,8 @@ def list_memberships(status: str = "all", plan: str = ""):
 
     for record in records:
         record["status"] = (
-            "Active" if record["start_date"] <= today <= record["end_date"]
+            "Cancelled" if record.get("cancelled_at")
+            else "Active" if record["start_date"] <= today <= record["end_date"]
             else "Expired" if record["end_date"] < today
             else "Upcoming"
         )
@@ -1277,7 +1281,7 @@ def search_transactions(scope: str = "all", query: str = ""):
                 "item_names": ", ".join(descriptions) or sale["kind"].replace("_", " ").title(),
                 "amount": money(sale["total_cents"]),
                 "payment_method": sale["payment_method"],
-                "status": sale["status"],
+                "status": display_sale_status(db, sale["id"], sale["status"]),
                 "categories": sale_categories,
                 "product_ids": [row["product_id"] for row in items],
                 "search_text": " ".join(
@@ -1320,6 +1324,62 @@ def search_transactions(scope: str = "all", query: str = ""):
                     + [part for row in purchased for part in (row["name"], row["category"])]
                     + descriptions
                 ),
+            })
+
+    # Refunds are independent accounting movements dated when issued.
+    # They can be searched alongside their original receipts.
+    with connect() as db:
+        refund_rows = rows(db.execute("""
+            SELECT r.*, s.receipt_no, s.customer_id, s.customer_name, s.kind
+            FROM refunds r JOIN sales s ON s.id = r.sale_id
+            ORDER BY r.created_at DESC, r.id DESC
+        """))
+        for refund in refund_rows:
+            items = rows(db.execute("""
+                SELECT si.item_name, si.quantity, si.category, si.product_id,
+                       pr.type, pr.name AS current_name
+                FROM sale_items si LEFT JOIN products pr ON pr.id = si.product_id
+                WHERE si.sale_id = ? ORDER BY si.id
+            """, (refund["sale_id"],)))
+            descriptions = [
+                f"{item['quantity']} x {item['item_name']}" if item["quantity"] > 1 else item["item_name"]
+                for item in items
+            ]
+            ref = f"REF-{refund['id']:06d}"
+            categories = classify_transaction(refund["kind"], items, " ".join(descriptions))
+            search_text = " ".join(
+                [ref, refund["receipt_no"], refund["customer_name"], refund["reason"], "Refund"]
+                + [str(v) for item in items for v in (item["item_name"], item["category"], item["current_name"] or "")]
+                + descriptions
+            )
+            if scope == "customer":
+                if numeric_id is not None and refund["customer_id"] != numeric_id:
+                    continue
+                if numeric_id is None and term.casefold() not in refund["customer_name"].casefold():
+                    continue
+            elif scope == "item":
+                if numeric_id is not None and numeric_id not in [item["product_id"] for item in items]:
+                    continue
+                if numeric_id is None and term.casefold() not in search_text.casefold():
+                    continue
+            elif scope == "payment" and term:
+                if numeric_id is not None or term.casefold() not in ref.casefold():
+                    continue
+            results.append({
+                "reference": ref,
+                "record_type": "refund",
+                "record_id": refund["id"],
+                "created_at": refund["created_at"],
+                "customer_id": refund["customer_id"],
+                "customer_name": refund["customer_name"],
+                "item_names": "Refund: " + (", ".join(descriptions) or refund["receipt_no"]),
+                "amount": "-" + money(refund["amount_cents"]),
+                "payment_method": refund["method"],
+                "status": "Refunded",
+                "categories": categories,
+                "related_receipt": refund["receipt_no"],
+                "product_ids": [row["product_id"] for row in items],
+                "search_text": search_text,
             })
 
     if scope == "all" and term:
@@ -1506,11 +1566,45 @@ def next_receipt_no(db):
     return f"R-{last_id + 1:06d}"
 
 
+def refund_row_for_sale(db, sale_id):
+    return db.execute(
+        "SELECT * FROM refunds WHERE sale_id = ?", (sale_id,)
+    ).fetchone()
+
+
+def display_sale_status(db, sale_id, stored_status):
+    return "Refunded" if stored_status == "Completed" and refund_row_for_sale(db, sale_id) else stored_status
+
+
+def format_refund(db, refund_id):
+    refund = db.execute("""
+        SELECT r.*, s.receipt_no, s.customer_id, s.customer_name,
+               s.payment_method AS original_payment_method, s.kind
+        FROM refunds r JOIN sales s ON s.id = r.sale_id
+        WHERE r.id = ?
+    """, (refund_id,)).fetchone()
+    if refund is None:
+        raise HTTPException(404, "Refund record not found.")
+    record = dict(refund)
+    record["refund_no"] = f"REF-{record['id']:06d}"
+    record["amount"] = money(record.pop("amount_cents"))
+    return record
+
+
 def get_sale_formatted(db, sale_id: int):
     sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
     if not sale:
         raise HTTPException(404, f"There is no sale record with ID {sale_id} right now.")
     sale = dict(sale)
+    refund = refund_row_for_sale(db, sale_id)
+    if refund is not None and sale["status"] == "Completed":
+        sale["status"] = "Refunded"
+        sale["refund_id"] = refund["id"]
+        sale["refund_no"] = f"REF-{refund['id']:06d}"
+        sale["refunded_at"] = refund["created_at"]
+        sale["refund_reason"] = refund["reason"]
+        sale["refund_method"] = refund["method"]
+        sale["refunded_amount"] = money(refund["amount_cents"])
     items = rows(db.execute("SELECT * FROM sale_items WHERE sale_id=?", (sale_id,)))
     sale["total"] = money(sale.pop("total_cents"))
     sale["amount_tendered"] = money(sale.pop("amount_tendered_cents"))
@@ -1691,8 +1785,14 @@ def list_sales(search: str = "", status: str = "", date: str = ""):
     params = []
 
     if status.strip():
-        query += " AND status = ?"
-        params.append(status.strip())
+        wanted = status.strip()
+        if wanted == "Refunded":
+            query += " AND status = 'Completed' AND EXISTS (SELECT 1 FROM refunds r WHERE r.sale_id = sales.id)"
+        elif wanted == "Completed":
+            query += " AND status = 'Completed' AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.sale_id = sales.id)"
+        else:
+            query += " AND status = ?"
+            params.append(wanted)
 
     if date.strip():
         query += " AND date(created_at) = date(?)"
@@ -1710,6 +1810,7 @@ def list_sales(search: str = "", status: str = "", date: str = ""):
         records = rows(db.execute(query, params))
         for sale in records:
             sale_id = sale["id"]
+            sale["status"] = display_sale_status(db, sale_id, sale["status"])
             items = rows(db.execute("SELECT * FROM sale_items WHERE sale_id=?", (sale_id,)))
             sale["total"] = money(sale.pop("total_cents"))
             sale["amount_tendered"] = money(sale.pop("amount_tendered_cents"))
@@ -1730,35 +1831,62 @@ def get_sale(sale_id: int):
         return get_sale_formatted(db, sale_id)
 
 
-@app.post("/sales/{sale_id}/void")
-def void_sale_endpoint(sale_id: int, data: SaleVoid):
-    reason = data.reason.strip()
-    if not reason:
-        raise HTTPException(422, "Void reason is required")
+@app.get("/refunds")
+def list_refunds():
     with connect() as db:
-        sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
-        if not sale:
-            raise HTTPException(404, f"There is no sale record with ID {sale_id} right now.")
-        if sale["status"] == "Voided":
-            raise HTTPException(422, "Sale is already voided")
-        db.execute(
-            "UPDATE sales SET status='Voided', void_reason=?, voided_at=datetime('now', 'localtime') WHERE id=?",
-            (reason, sale_id)
-        )
-        updated = dict(db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone())
-        items = rows(db.execute("SELECT * FROM sale_items WHERE sale_id=?", (sale_id,)))
-        updated["total"] = money(updated.pop("total_cents"))
-        updated["amount_tendered"] = money(updated.pop("amount_tendered_cents"))
-        updated["change"] = money(updated.pop("change_cents"))
-        for it in items:
-            it["unit_price"] = money(it.pop("unit_price_cents"))
-            it["line_amount"] = money(it.pop("line_amount_cents"))
-        updated["items"] = items
-        ts_row = db.execute("SELECT trainer_name, session_date_time FROM trainer_sessions WHERE sale_id=?", (sale_id,)).fetchone()
-        if ts_row:
-            updated["trainer_name"] = ts_row["trainer_name"]
-            updated["session_date_time"] = ts_row["session_date_time"]
-        return updated
+        ids = [
+            row[0] for row in db.execute(
+                "SELECT id FROM refunds ORDER BY created_at DESC, id DESC"
+            ).fetchall()
+        ]
+        return [format_refund(db, refund_id) for refund_id in ids]
+
+
+@app.get("/refunds/{refund_id}")
+def get_refund(refund_id: int):
+    with connect() as db:
+        return format_refund(db, refund_id)
+
+
+@app.post("/sales/{sale_id}/refund", status_code=201)
+def refund_sale(sale_id: int, data: RefundCreate):
+    """Record a full manual refund; never initiate external cash or e-wallet transfers."""
+    reason = data.reason.strip()
+    if len(reason) < 3:
+        raise HTTPException(422, "Provide a reason of at least 3 characters.")
+
+    with connect() as db:
+        sale = db.execute("SELECT * FROM sales WHERE id = ?", (sale_id,)).fetchone()
+        if sale is None:
+            raise HTTPException(404, "Sale not found.")
+        previous = refund_row_for_sale(db, sale_id)
+        if previous is not None:
+            raise HTTPException(409, f"Sale was already refunded ({format_refund(db, previous['id'])['refund_no']}).")
+        if sale["status"] != "Completed":
+            raise HTTPException(409, "Only completed, unrefunded sales can be refunded.")
+        amount = sale["total_cents"]
+        if amount <= 0:
+            raise HTTPException(422, "Sale has no refundable amount.")
+
+        now = ph_now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor = db.execute("""
+            INSERT INTO refunds (sale_id, amount_cents, method, reason, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (sale_id, amount, data.refund_method, reason, now))
+
+        if str(sale["kind"]).lower() == "membership":
+            db.execute(
+                "UPDATE memberships SET cancelled_at = ? WHERE sale_id = ? AND cancelled_at IS NULL",
+                (now, sale_id),
+            )
+        elif str(sale["kind"]).lower() == "trainer":
+            db.execute(
+                "UPDATE trainer_sessions SET cancelled_at = ? WHERE sale_id = ? AND cancelled_at IS NULL",
+                (now, sale_id),
+            )
+
+        # Visits remain in the attendance audit log, even when a daily pass is refunded.
+        return format_refund(db, cursor.lastrowid)
 
 
 # TRAINERS & TRAINER SESSIONS
@@ -1781,6 +1909,8 @@ def customer_trainer_sessions_count(customer_id: int):
             JOIN sales s ON s.id = ts.sale_id
             WHERE ts.customer_id = ?
               AND s.status = 'Completed'
+              AND ts.cancelled_at IS NULL
+              AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.sale_id = s.id)
               AND strftime('%Y-%m', ts.session_date_time) = ?
         """, (customer_id, current_month)).fetchone()[0]
         return {"customer_id": customer_id, "month": current_month, "count": count}
@@ -1934,7 +2064,7 @@ def sales_report(period: str = "daily"):
     """
     categories_order = [
         "Membership", "Gym Access", "Coaching",
-        "Beverage", "Supplement", "Merchandise", "Other",
+        "Beverage", "Supplement", "Merchandise", "Other", "Refunds",
     ]
     with connect() as db:
         periods = [
@@ -1943,6 +2073,8 @@ def sales_report(period: str = "daily"):
                     SELECT strftime('{grouping}', created_at) AS period_value FROM payments
                     UNION
                     SELECT strftime('{grouping}', created_at) AS period_value FROM sales
+                    UNION
+                    SELECT strftime('{grouping}', created_at) AS period_value FROM refunds
                 ) WHERE period_value IS NOT NULL ORDER BY period_value DESC
             """).fetchall()
         ]
@@ -1963,10 +2095,18 @@ def sales_report(period: str = "daily"):
                 ORDER BY p.created_at DESC, p.id DESC
             """, (value,)).fetchall()
 
+            refund_rows = db.execute(f"""
+                SELECT r.id, r.sale_id, r.amount_cents, r.created_at, s.receipt_no
+                FROM refunds r JOIN sales s ON s.id = r.sale_id
+                WHERE strftime('{grouping}', r.created_at) = ?
+                ORDER BY r.created_at DESC, r.id DESC
+            """, (value,)).fetchall()
+            refund_cents = sum(row["amount_cents"] for row in refund_rows)
             sales_cents = sum(row["total_cents"] for row in completed_sales)
             legacy_cents = sum(row["amount_cents"] for row in legacy_payments)
-            total_cents = sales_cents + legacy_cents
-            total_transactions = len(completed_sales) + len(legacy_payments)
+            gross_cents = sales_cents + legacy_cents
+            total_cents = gross_cents - refund_cents
+            total_transactions = len(completed_sales) + len(legacy_payments) + len(refund_rows)
             voided_count = sum(row["status"] == "Voided" for row in sales)
 
             categories = {}
@@ -2022,6 +2162,20 @@ def sales_report(period: str = "daily"):
             if categorized_sale_cents < sales_cents:
                 add_category("Other", sales_cents - categorized_sale_cents, 0)
 
+            if refund_rows:
+                add_category("Refunds", -refund_cents, len(refund_rows))
+
+            product_refund_cents = 0
+            product_cats = {"Beverage", "Supplement", "Merchandise"}
+            for refund in refund_rows:
+                # Refunds are full-sale amounts. Item snapshots preserve original allocations.
+                product_refund_cents += db.execute("""
+                    SELECT COALESCE(SUM(si.line_amount_cents), 0)
+                    FROM sale_items si
+                    WHERE si.sale_id = ? AND si.category IN
+                          ('Beverage', 'Supplement', 'Merchandise')
+                """, (refund["sale_id"],)).fetchone()[0]
+
             tx_list = []
             if period == "daily":
                 for sale in sales:
@@ -2045,7 +2199,7 @@ def sales_report(period: str = "daily"):
                         "time": sale["created_at"][11:16],
                         "item_name": ", ".join(names) or (sale["kind"] or "Transaction").replace("_", " ").title(),
                         "total": money(sale["total_cents"]),
-                        "status": sale["status"],
+                        "status": display_sale_status(db, sale["id"], sale["status"]),
                         "created_at": sale["created_at"],
                     })
 
@@ -2067,6 +2221,23 @@ def sales_report(period: str = "daily"):
                         "status": "Completed",
                         "created_at": payment["created_at"],
                     })
+                for refund in refund_rows:
+                    original_items = db.execute("""
+                        SELECT item_name, quantity FROM sale_items WHERE sale_id = ? ORDER BY id
+                    """, (refund["sale_id"],)).fetchall()
+                    names = [
+                        f"{item['quantity']} x {item['item_name']}"
+                        if item["quantity"] > 1 else item["item_name"]
+                        for item in original_items
+                    ]
+                    tx_list.append({
+                        "receipt_no": f"REF-{refund['id']:06d}",
+                        "time": refund["created_at"][11:16],
+                        "item_name": "Refund: " + (", ".join(names) or refund["receipt_no"]),
+                        "total": "-" + money(refund["amount_cents"]),
+                        "status": "Refunded",
+                        "created_at": refund["created_at"],
+                    })
                 tx_list.sort(key=lambda row: (row["created_at"], row["receipt_no"]), reverse=True)
                 for transaction in tx_list:
                     transaction.pop("created_at")
@@ -2079,8 +2250,7 @@ def sales_report(period: str = "daily"):
                 }
                 for cat in categories_order if cat in categories
             ]
-            product_cats = {"Beverage", "Supplement", "Merchandise"}
-            product_income = sum(row["cents"] for cat, row in categories.items() if cat in product_cats)
+            product_income = sum(row["cents"] for cat, row in categories.items() if cat in product_cats) - product_refund_cents
             # A transaction can contain more than one category; the overall
             # transaction count is unique receipts/payments, never summed category counts.
             product_transactions = sum(
@@ -2098,12 +2268,22 @@ def sales_report(period: str = "daily"):
                     LIMIT 1
                 """, (payment["id"],)).fetchone())
                 for payment in legacy_payments
+            ) + sum(
+                bool(db.execute("""
+                    SELECT 1 FROM sale_items
+                    WHERE sale_id = ? AND category IN ('Beverage', 'Supplement', 'Merchandise')
+                    LIMIT 1
+                """, (refund["sale_id"],)).fetchone())
+                for refund in refund_rows
             )
 
             records.append({
                 "period": value,
                 "categories": category_rows,
                 "total_transactions": total_transactions,
+                "gross_sales": money(gross_cents),
+                "refunds_total": money(refund_cents),
+                "refunds_count": len(refund_rows),
                 "total_sales": money(total_cents),
                 "voided_count": voided_count,
                 "transactions": tx_list,
@@ -2118,38 +2298,81 @@ def sales_report(period: str = "daily"):
 
 @app.get("/reports/payment-methods")
 def payment_methods_report():
+    """Net receipts by method, including manually recorded refund outflows."""
     with connect() as db:
-        records = rows(db.execute("""
-            SELECT method, COUNT(*) AS transactions,
-                   SUM(amount_cents) AS total_cents
-            FROM payments GROUP BY method
-        """))
+        totals = {
+            "Cash": {"method": "Cash", "transactions": 0, "total_cents": 0, "refunds_cents": 0},
+            "E-Wallet": {"method": "E-Wallet", "transactions": 0, "total_cents": 0, "refunds_cents": 0},
+        }
+        for row in db.execute("""
+            SELECT payment_method AS method, COUNT(*) AS n, SUM(total_cents) AS cents
+            FROM sales WHERE status = 'Completed' GROUP BY payment_method
+        """).fetchall():
+            item = totals[row["method"]]
+            item["transactions"] += row["n"]
+            item["total_cents"] += row["cents"]
 
-    for record in records:
-        record["total"] = money(record.pop("total_cents"))
-    return records
+        # Older membership payments without matching sales are still valid income.
+        legacy = db.execute("""
+            SELECT p.method, COUNT(*) AS n, SUM(p.amount_cents) AS cents
+            FROM payments p
+            WHERE NOT EXISTS (
+                SELECT 1 FROM memberships m JOIN sales s ON s.id = m.sale_id
+                WHERE m.customer_id = p.customer_id
+                  AND m.created_at = p.created_at
+                  AND m.amount_cents = p.amount_cents
+                  AND p.description IN ('Plan: ' || m.plan, 'Plan Renewal: ' || m.plan)
+            )
+            GROUP BY p.method
+        """).fetchall()
+        for row in legacy:
+            item = totals[row["method"]]
+            item["transactions"] += row["n"]
+            item["total_cents"] += row["cents"]
+
+        for row in db.execute("""
+            SELECT method, COUNT(*) AS n, SUM(amount_cents) AS cents
+            FROM refunds GROUP BY method
+        """).fetchall():
+            item = totals[row["method"]]
+            item["transactions"] += row["n"]
+            item["total_cents"] -= row["cents"]
+            item["refunds_cents"] = row["cents"]
+
+    return [
+        {
+            "method": item["method"],
+            "transactions": item["transactions"],
+            "total": money(item["total_cents"]),
+            "refunds": money(item["refunds_cents"]),
+        }
+        for item in totals.values() if item["transactions"]
+    ]
 
 
 @app.get("/reports/memberships")
 def membership_report():
     memberships = list_memberships()
     yearly = [m for m in memberships if m["plan"] == "Yearly membership"]
-    monthly = [m for m in memberships if m["plan"] == "Member session, monthly"]
+    monthly = [m for m in memberships if m["plan"] in MONTHLY_PLAN_NAMES]
     return {
         "yearly": {
             "active": sum(m["status"] == "Active" for m in yearly),
             "expired": sum(m["status"] == "Expired" for m in yearly),
             "upcoming": sum(m["status"] == "Upcoming" for m in yearly),
+            "cancelled": sum(m["status"] == "Cancelled" for m in yearly),
             "total": len(yearly)
         },
         "monthly": {
             "active": sum(m["status"] == "Active" for m in monthly),
             "expired": sum(m["status"] == "Expired" for m in monthly),
             "upcoming": sum(m["status"] == "Upcoming" for m in monthly),
+            "cancelled": sum(m["status"] == "Cancelled" for m in monthly),
             "total": len(monthly)
         },
         "active": sum(m["status"] == "Active" for m in memberships),
         "expired": sum(m["status"] == "Expired" for m in memberships),
         "upcoming": sum(m["status"] == "Upcoming" for m in memberships),
+        "cancelled": sum(m["status"] == "Cancelled" for m in memberships),
         "total": len(memberships)
     }

@@ -538,6 +538,11 @@ def print_receipt(sale, width=58):
     print(f"Payment:     {sale.get('payment_method', '-')}")
     print(f"{'Tendered':<44} {format_currency(sale.get('amount_tendered', sale['total'])):>12}")
     print(f"{'Change':<44} {format_currency(sale.get('change', '0.00')):>12}")
+    if sale.get("status") == "Refunded":
+        print("-" * width)
+        print(f"Status:      Refunded ({sale.get('refund_no', '-')})")
+        print(f"Amount:      {format_currency(sale.get('refunded_amount', '0.00'))}")
+        print(f"Refund Date: {sale.get('refunded_at', '-')}")
     print("-" * width)
 
 
@@ -1737,6 +1742,176 @@ def daily_session_flow():
             return
 
 
+def refund_purchase_session():
+    """Issue a full refund against an existing sale; keep the original receipt for audit."""
+    page = 1
+    query = ""
+    page_size = 7
+    width = 100
+    columns = [
+        ("Receipt No.", "reference", 12),
+        ("Product / Service", "item_names", 43),
+        ("Amount", lambda row: format_currency(row["amount"]), 13, "right"),
+        ("Status", "status", 10),
+    ]
+
+    while True:
+        params = {"query": query} if query else None
+        records = request("GET", "/transactions/search", params=params)
+        if records is None:
+            pause()
+            return
+        eligible = [
+            record for record in records
+            if record["record_type"] == "sale" and record["status"] == "Completed"
+        ]
+        total_pages = max(1, (len(eligible) + page_size - 1) // page_size)
+        page = min(page, total_pages)
+        visible = eligible[(page - 1) * page_size:page * page_size]
+
+        header("REFUND PURCHASE / SESSION", input_screen=False, width=width)
+        print("Only completed, unrefunded receipts can be refunded.")
+        print("A full refund is recorded in the database; money must be returned manually.")
+        if query:
+            print(f"Search filter: {query}")
+        print(f"Eligible sales: {len(eligible)}   |   Page {page} of {total_pages}")
+        print("-" * width)
+        print_table_header(columns)
+        print("-" * width)
+        if eligible:
+            for transaction in visible:
+                print_table_row(transaction, columns)
+        else:
+            print("No eligible sales found.")
+        print("-" * width)
+        print("[S] Search by customer, item, or receipt")
+        print("[>] Next page     [<] Previous page     [C] Clear search")
+        print("[0] Back")
+        print()
+        choice = input("Receipt number or choice: ").strip()
+        lower = choice.casefold()
+        if lower in ("0", "b", "back"):
+            if query:
+                query = ""
+                page = 1
+                continue
+            return
+        if lower in (">", "n", "next"):
+            if page < total_pages:
+                page += 1
+            continue
+        if lower in ("<", "p", "prev", "previous"):
+            if page > 1:
+                page -= 1
+            continue
+        if lower in ("c", "clear"):
+            query = ""
+            page = 1
+            continue
+        if lower in ("s", "search"):
+            query = input("Search customer, item, or receipt [0 to cancel]: ").strip()
+            if query == "0":
+                query = ""
+            page = 1
+            continue
+
+        selected = next(
+            (r for r in eligible if r["reference"].casefold() == lower),
+            None,
+        )
+        if not selected:
+            print("Enter an eligible receipt number from the list.")
+            pause()
+            continue
+
+        sale = request("GET", f"/sales/{selected['record_id']}")
+        if not sale:
+            pause()
+            continue
+
+        header("CONFIRM REFUND DETAILS", input_screen=False, width=width)
+        print(f"Original Receipt:  {sale['receipt_no']}")
+        print(f"Customer:          {sale['customer_name']}")
+        print(f"Original Payment:  {sale['payment_method']}")
+        print(f"Refund Amount:     {format_currency(sale['total'])}")
+        print("Purchased items:")
+        for item in sale.get("items", []):
+            for line in wrap_cell(f"  {item['quantity']} x {item['item_name']}", width - 2):
+                print(line)
+        print("-" * width)
+        print("This refunds the entire receipt, not individual items.")
+        if str(sale.get("kind", "")).lower() == "membership":
+            print("The purchased membership/session will be cancelled.")
+        if str(sale.get("kind", "")).lower() == "trainer":
+            print("The corresponding trainer appointment will be cancelled.")
+        print("Attendance records remain as historical records.")
+        print("This does NOT send money automatically to a payment provider.")
+        print("-" * width)
+
+        try:
+            reason = ask("Reason for refund [0 to cancel]: ")
+            if len(reason.strip()) < 3:
+                print("Reason must have at least 3 characters.")
+                pause()
+                continue
+            method = ask_payment_method()
+        except GoBack:
+            continue
+
+        print(f"Refund method:  {method}")
+        print(f"Refund amount:  {format_currency(sale['total'])}")
+        print("Return this amount to the customer manually before confirming.")
+        if not confirm("Have you issued this full refund? (Y/N, 0 to cancel): "):
+            continue
+        result = request("POST", f"/sales/{selected['record_id']}/refund", {
+            "reason": reason,
+            "refund_method": method,
+        })
+        if not result:
+            pause()
+            continue
+        header("REFUND RECORDED", input_screen=False, width=width)
+        print(f"Refund No.:       {result['refund_no']}")
+        print(f"Original Receipt: {result['receipt_no']}")
+        print(f"Amount:           {format_currency(result['amount'])}")
+        print(f"Method:           {result['method']}")
+        print(f"Reason:           {result['reason']}")
+        print(f"Date:             {result['created_at']}")
+        print("-" * width)
+        print("Manual refund acknowledged and recorded in the refund ledger.")
+        print("No payment-provider transfer was performed by this system.")
+        pause()
+        page = 1
+        query = ""
+
+
+def refund_history():
+    refunds = request("GET", "/refunds")
+    if refunds is None:
+        pause()
+        return
+    if not refunds:
+        header("REFUND HISTORY", input_screen=False)
+        print("No refunds have been recorded.")
+        pause()
+        return
+
+    paginated_view(
+        "REFUND HISTORY",
+        lambda: refunds,
+        [
+            ("Refund No.", "refund_no", 12),
+            ("Original Receipt", "receipt_no", 16),
+            ("Date", lambda row: row["created_at"][:16], 16),
+            ("Amount", lambda row: format_currency(row["amount"]), 12, "right"),
+            ("Method", "method", 10),
+        ],
+        empty_message="No refunds have been recorded.",
+        sort_key=None,
+        width=92,
+    )
+
+
 def product_service_management():
     submenu("PRODUCT/SERVICE MANAGEMENT", [
         ("Yearly Membership", yearly_membership_menu),
@@ -1744,6 +1919,8 @@ def product_service_management():
         ("Daily Session", daily_session_flow),
         ("Services/Products", services_products_menu),
         ("Customer Overview", customer_overview),
+        ("Refund Purchase / Session", refund_purchase_session),
+        ("Refund History", refund_history),
     ])
 
 
@@ -2910,6 +3087,25 @@ def show_legacy_payment_details(transaction):
     pause()
 
 
+def show_refund_details(refund_id):
+    record = request("GET", f"/refunds/{refund_id}")
+    if not record:
+        pause()
+        return
+    header("REFUND DETAILS", input_screen=False, width=84)
+    print(f"Refund Number:    {record['refund_no']}")
+    print(f"Original Receipt: {record['receipt_no']}")
+    print(f"Refund Date:      {record['created_at']}")
+    print(f"Amount Refunded:  {format_currency(record['amount'])}")
+    print(f"Refund Method:    {record['method']}")
+    print(f"Original Method:  {record['original_payment_method']}")
+    print(f"Customer:         {record['customer_name']}")
+    print(f"Reason:           {record['reason']}")
+    print("-" * 84)
+    print("This is a manual refund record; no electronic transfer is initiated.")
+    pause()
+
+
 def search_transactions_ui():
     """Browse compact transaction entries with category shortcuts and one search box."""
     filters = {
@@ -3044,6 +3240,8 @@ def search_transactions_ui():
         if selected:
             if selected["record_type"] == "sale":
                 view_sale_details(selected["record_id"])
+            elif selected["record_type"] == "refund":
+                show_refund_details(selected["record_id"])
             else:
                 show_legacy_payment_details(selected)
             continue
@@ -3090,29 +3288,16 @@ def view_sale_details(sale_id):
         print(f"{'Change:':<46} {format_currency(sale['change']):>10}")
         print("=" * detail_width)
 
-        if sale["status"] == "Completed":
-            print("[V] Void sale")
-            print("[0] Back")
-            print("-" * detail_width)
-            choice = input("Choice: ").strip().lower()
-            if choice in ("0", "b", "back"):
-                return
-            elif choice == "v":
-                try:
-                    reason = ask("Enter void reason: ")
-                except GoBack:
-                    continue
-                confirm = input("Confirm void this sale? (Y/N): ").strip().lower()
-                if confirm == "y":
-                    res = request("POST", f"/sales/{sale_id}/void", {"reason": reason})
-                    if res:
-                        print("\nSale has been voided successfully.")
-                        pause()
-                else:
-                    print("Void cancelled.")
-                    pause()
-        else:
-            pause()
+        if sale["status"] == "Refunded":
+            print(f"Refund Ref.:     {sale.get('refund_no', '-')}")
+            print(f"Refund Amount:   {format_currency(sale.get('refunded_amount', '0.00'))}")
+            print(f"Refund Date:     {sale.get('refunded_at', '-')}")
+            print(f"Refund Method:   {sale.get('refund_method', '-')}")
+            print(f"Refund Reason:   {sale.get('refund_reason', '-')}")
+        print("-" * detail_width)
+        print("[0] Back")
+        choice = input("Choice: ").strip().lower()
+        if choice in ("0", "b", "back", ""):
             return
 
 
@@ -3126,105 +3311,128 @@ def search_records():
 
 # SALES REPORTS
 
-def display_sales_report(title, period):
-    data = request("GET", "/reports/sales", params={"period": period})
-    if data is None:
+def daily_transactions():
+    """Show all daily transaction records in one chronological, paginated list."""
+    periods = request("GET", "/reports/sales", params={"period": "daily"})
+    if periods is None:
+        pause()
+        return
+    transactions = [
+        {"date": day["period"], **record}
+        for day in periods for record in day.get("transactions", [])
+    ]
+    transactions.sort(
+        key=lambda row: (row["date"], row.get("time", ""), row["receipt_no"]),
+        reverse=True,
+    )
+
+    if not transactions:
+        header("DAILY TRANSACTIONS", input_screen=False, width=100)
+        print("No daily transactions are recorded.")
         pause()
         return
 
-    if not data:
-        header(title, input_screen=False, width=60)
-        print(f"\nThere are no records for {title.lower()} right now.")
-        pause()
-        return
-
+    columns = [
+        ("Receipt No.", "receipt_no", 13),
+        ("Date", "date", 12),
+        ("Time", "time", 7),
+        ("Product / Service", "item_name", 44),
+        ("Amount", lambda row: format_currency(row["total"]), 13, "right"),
+        ("Status", "status", 10),
+    ]
+    width = table_width(columns, 116)
     page = 1
-    transaction_page = 1
-    transaction_page_size = 8
-    total_pages = len(data)
-    width = 112
+    page_size = 10
+    pages = (len(transactions) + page_size - 1) // page_size
 
     while True:
-        record = data[page - 1]
-        header(title, input_screen=False, width=width)
-        period_label = "Date" if period == "daily" else "Month"
-        print(f"{period_label}: {record['period']}")
-        category_columns = [
-            ("Category", "category", 38),
-            ("Transactions", "transactions", 24, "right"),
-            ("Amount", lambda row: format_currency(row["amount"]), 30, "right"),
-        ]
+        header("DAILY TRANSACTIONS", input_screen=False, width=width)
+        print(f"Transactions: {len(transactions)}    Page {page} of {pages}")
         print("-" * width)
-        print_table_header(category_columns)
+        print_table_header(columns)
         print("-" * width)
-        for cat in record.get("categories", []):
-            print_table_row(cat, category_columns)
+        for record in transactions[(page - 1) * page_size:page * page_size]:
+            print_table_row(record, columns)
         print("-" * width)
-        print_table_row({
-            "category": "Total sales",
-            "transactions": record["total_transactions"],
-            "amount": record["total_sales"],
-        }, category_columns)
-        print("-" * width)
-        print(f"Voided sales excluded: {record.get('voided_count', 0)}")
 
-        tx_total_pages = 1
-        if period == "daily" and record.get("transactions"):
-            transactions = record["transactions"]
-            tx_total_pages = max(1, (len(transactions) + transaction_page_size - 1) // transaction_page_size)
-            transaction_page = min(transaction_page, tx_total_pages)
-            begin_index = (transaction_page - 1) * transaction_page_size
-            transaction_columns = [
-                ("Receipt No.", "receipt_no", 12),
-                ("Time", "time", 8),
-                ("Item Name", "item_name", 40),
-                ("Total", lambda row: format_currency(row["total"]), 13, "right"),
-                ("Status", "status", 10),
-            ]
-            print(f"\nTransactions: Page {transaction_page} of {tx_total_pages}\n")
-            print_table_header(transaction_columns)
-            print("-" * width)
-            for tx in transactions[begin_index:begin_index + transaction_page_size]:
-                print_table_row(tx, transaction_columns)
+        if pages == 1:
+            pause()
+            return
 
-        print("-" * width)
-        print(f"REPORT PERIOD   Page {page} of {total_pages}")
-        period_nav = []
-        if page > 1:
-            period_nav.append("[<<] Previous period")
-        if page < total_pages:
-            period_nav.append("[>>] Next period")
-        period_nav.append("[0] Back")
-        print("        ".join(period_nav))
-
-        if tx_total_pages > 1:
-            print()
-            print(f"TRANSACTIONS    Page {transaction_page} of {tx_total_pages}")
-            tx_nav = []
-            if transaction_page > 1:
-                tx_nav.append("[<] Previous page")
-            if transaction_page < tx_total_pages:
-                tx_nav.append("[>] Next page")
-            print("        ".join(tx_nav))
-        print()
-
+        print(page_nav_options(page, pages, include_back=True))
         choice = input("Choice: ").strip().lower()
         if choice in ("0", "b", "back"):
             return
-        if choice == ">" and transaction_page < tx_total_pages:
-            transaction_page += 1
-            continue
-        if choice == "<" and transaction_page > 1:
-            transaction_page -= 1
-            continue
-        if choice in (">>", "n", "next") and page < total_pages:
+        if choice in (">", "n", "next") and page < pages:
             page += 1
-            transaction_page = 1
             continue
-        if choice in ("<<", "p", "prev", "previous") and page > 1:
+        if choice in ("<", "p", "prev", "previous") and page > 1:
             page -= 1
-            transaction_page = 1
             continue
+        print("Choose <, >, or 0.")
+        pause()
+
+
+def monthly_sales_report():
+    """Display the monthly summary; use Enter for a single month."""
+    periods = request("GET", "/reports/sales", params={"period": "monthly"})
+    if periods is None:
+        pause()
+        return
+    if not periods:
+        header("MONTHLY SALES REPORT", input_screen=False, width=104)
+        print("There are no monthly sales records.")
+        pause()
+        return
+
+    columns = [
+        ("Category", "category", 38),
+        ("Transactions", "transactions", 24, "right"),
+        ("Amount", lambda row: format_currency(row["amount"]), 30, "right"),
+    ]
+    width = table_width(columns, 112)
+    page = 1
+    pages = len(periods)
+
+    while True:
+        record = periods[page - 1]
+        header("MONTHLY SALES REPORT", input_screen=False, width=width)
+        print(f"Month: {record['period']}")
+        print()
+        print_table_header(columns)
+        print("-" * width)
+        for category in record.get("categories", []):
+            print_table_row(category, columns)
+        print("-" * width)
+        print(f"Gross Sales:       {format_currency(record.get('gross_sales', record['total_sales']))}")
+        print(f"Refunds Issued:    -{format_currency(record.get('refunds_total', '0.00'))}")
+        print_table_row({
+            "category": "Net Sales",
+            "transactions": record["total_transactions"],
+            "amount": record["total_sales"],
+        }, columns)
+        print("-" * width)
+        if record.get("voided_count"):
+            print(f"Historical voided sales excluded: {record['voided_count']}")
+        print()
+
+        if pages == 1:
+            pause()
+            return
+
+        print(f"Month {page} of {pages}")
+        print(page_nav_options(page, pages, include_back=True))
+        choice = input("Choice: ").strip().lower()
+        if choice in ("0", "b", "back"):
+            return
+        if choice in (">", "n", "next") and page < pages:
+            page += 1
+            continue
+        if choice in ("<", "p", "prev", "previous") and page > 1:
+            page -= 1
+            continue
+        print("Choose <, >, or 0.")
+        pause()
 
 
 def report(endpoint, title, params=None):
@@ -3254,6 +3462,7 @@ def report(endpoint, title, params=None):
                     "active": data.get("yearly", {}).get("active", 0),
                     "expired": data.get("yearly", {}).get("expired", 0),
                     "upcoming": data.get("yearly", {}).get("upcoming", 0),
+                    "cancelled": data.get("yearly", {}).get("cancelled", 0),
                     "total": data.get("yearly", {}).get("total", 0)
                 },
                 {
@@ -3261,6 +3470,7 @@ def report(endpoint, title, params=None):
                     "active": data.get("monthly", {}).get("active", 0),
                     "expired": data.get("monthly", {}).get("expired", 0),
                     "upcoming": data.get("monthly", {}).get("upcoming", 0),
+                    "cancelled": data.get("monthly", {}).get("cancelled", 0),
                     "total": data.get("monthly", {}).get("total", 0)
                 },
                 {
@@ -3268,6 +3478,7 @@ def report(endpoint, title, params=None):
                     "active": data.get("active", 0),
                     "expired": data.get("expired", 0),
                     "upcoming": data.get("upcoming", 0),
+                    "cancelled": data.get("cancelled", 0),
                     "total": data.get("total", 0)
                 }
             ]
@@ -3276,6 +3487,7 @@ def report(endpoint, title, params=None):
             ("Active", "active", 12, "right"),
             ("Expired", "expired", 12, "right"),
             ("Upcoming", "upcoming", 12, "right"),
+            ("Cancelled", "cancelled", 12, "right"),
             ("Total", "total", 10, "right")
         ]
         paginated_view(
@@ -3308,12 +3520,12 @@ def report(endpoint, title, params=None):
 def sales_reports():
     submenu("SALES REPORTS", [
         (
-            "Daily Sales Report",
-            lambda: display_sales_report("DAILY SALES REPORT", "daily")
+            "Daily Transactions",
+            daily_transactions
         ),
         (
             "Monthly Sales Report",
-            lambda: display_sales_report("MONTHLY SALES REPORT", "monthly")
+            monthly_sales_report
         ),
         (
             "Membership Summary",
