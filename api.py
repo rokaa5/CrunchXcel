@@ -2057,7 +2057,7 @@ def sales_report(period: str = "daily"):
     """
     categories_order = [
         "Membership", "Gym Access", "Coaching",
-        "Beverage", "Supplement", "Merchandise", "Other",
+        "Beverage", "Supplement", "Merchandise", "Other", "Refunds",
     ]
     with connect() as db:
         periods = [
@@ -2066,6 +2066,8 @@ def sales_report(period: str = "daily"):
                     SELECT strftime('{grouping}', created_at) AS period_value FROM payments
                     UNION
                     SELECT strftime('{grouping}', created_at) AS period_value FROM sales
+                    UNION
+                    SELECT strftime('{grouping}', created_at) AS period_value FROM refunds
                 ) WHERE period_value IS NOT NULL ORDER BY period_value DESC
             """).fetchall()
         ]
@@ -2086,10 +2088,18 @@ def sales_report(period: str = "daily"):
                 ORDER BY p.created_at DESC, p.id DESC
             """, (value,)).fetchall()
 
+            refund_rows = db.execute(f"""
+                SELECT r.id, r.sale_id, r.amount_cents, r.created_at, s.receipt_no
+                FROM refunds r JOIN sales s ON s.id = r.sale_id
+                WHERE strftime('{grouping}', r.created_at) = ?
+                ORDER BY r.created_at DESC, r.id DESC
+            """, (value,)).fetchall()
+            refund_cents = sum(row["amount_cents"] for row in refund_rows)
             sales_cents = sum(row["total_cents"] for row in completed_sales)
             legacy_cents = sum(row["amount_cents"] for row in legacy_payments)
-            total_cents = sales_cents + legacy_cents
-            total_transactions = len(completed_sales) + len(legacy_payments)
+            gross_cents = sales_cents + legacy_cents
+            total_cents = gross_cents - refund_cents
+            total_transactions = len(completed_sales) + len(legacy_payments) + len(refund_rows)
             voided_count = sum(row["status"] == "Voided" for row in sales)
 
             categories = {}
@@ -2145,6 +2155,20 @@ def sales_report(period: str = "daily"):
             if categorized_sale_cents < sales_cents:
                 add_category("Other", sales_cents - categorized_sale_cents, 0)
 
+            if refund_rows:
+                add_category("Refunds", -refund_cents, len(refund_rows))
+
+            product_refund_cents = 0
+            product_cats = {"Beverage", "Supplement", "Merchandise"}
+            for refund in refund_rows:
+                # Refunds are full-sale amounts. Item snapshots preserve original allocations.
+                product_refund_cents += db.execute("""
+                    SELECT COALESCE(SUM(si.line_amount_cents), 0)
+                    FROM sale_items si
+                    WHERE si.sale_id = ? AND si.category IN
+                          ('Beverage', 'Supplement', 'Merchandise')
+                """, (refund["sale_id"],)).fetchone()[0]
+
             tx_list = []
             if period == "daily":
                 for sale in sales:
@@ -2168,7 +2192,7 @@ def sales_report(period: str = "daily"):
                         "time": sale["created_at"][11:16],
                         "item_name": ", ".join(names) or (sale["kind"] or "Transaction").replace("_", " ").title(),
                         "total": money(sale["total_cents"]),
-                        "status": sale["status"],
+                        "status": display_sale_status(db, sale["id"], sale["status"]),
                         "created_at": sale["created_at"],
                     })
 
@@ -2190,6 +2214,23 @@ def sales_report(period: str = "daily"):
                         "status": "Completed",
                         "created_at": payment["created_at"],
                     })
+                for refund in refund_rows:
+                    original_items = db.execute("""
+                        SELECT item_name, quantity FROM sale_items WHERE sale_id = ? ORDER BY id
+                    """, (refund["sale_id"],)).fetchall()
+                    names = [
+                        f"{item['quantity']} x {item['item_name']}"
+                        if item["quantity"] > 1 else item["item_name"]
+                        for item in original_items
+                    ]
+                    tx_list.append({
+                        "receipt_no": f"REF-{refund['id']:06d}",
+                        "time": refund["created_at"][11:16],
+                        "item_name": "Refund: " + (", ".join(names) or refund["receipt_no"]),
+                        "total": "-" + money(refund["amount_cents"]),
+                        "status": "Refunded",
+                        "created_at": refund["created_at"],
+                    })
                 tx_list.sort(key=lambda row: (row["created_at"], row["receipt_no"]), reverse=True)
                 for transaction in tx_list:
                     transaction.pop("created_at")
@@ -2202,8 +2243,7 @@ def sales_report(period: str = "daily"):
                 }
                 for cat in categories_order if cat in categories
             ]
-            product_cats = {"Beverage", "Supplement", "Merchandise"}
-            product_income = sum(row["cents"] for cat, row in categories.items() if cat in product_cats)
+            product_income = sum(row["cents"] for cat, row in categories.items() if cat in product_cats) - product_refund_cents
             # A transaction can contain more than one category; the overall
             # transaction count is unique receipts/payments, never summed category counts.
             product_transactions = sum(
@@ -2227,6 +2267,9 @@ def sales_report(period: str = "daily"):
                 "period": value,
                 "categories": category_rows,
                 "total_transactions": total_transactions,
+                "gross_sales": money(gross_cents),
+                "refunds_total": money(refund_cents),
+                "refunds_count": len(refund_rows),
                 "total_sales": money(total_cents),
                 "voided_count": voided_count,
                 "transactions": tx_list,
