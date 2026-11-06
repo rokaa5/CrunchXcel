@@ -330,6 +330,7 @@ def initialize_database():
         migrate_customers_table(db)
         migrate_products_table(db)
         migrate_sales_and_memberships(db)
+        add_column_if_missing(db, "trainer_sessions", "session_label", "TEXT")
         seed_default_products(db)
         ensure_daily_session_product(db)
         seed_default_trainers(db)

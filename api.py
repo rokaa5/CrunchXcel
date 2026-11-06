@@ -1233,10 +1233,12 @@ def get_sale_formatted(db, sale_id: int):
         it["line_amount"] = money(it.pop("line_amount_cents"))
         it["discount"] = money(it.pop("discount_cents") if it.get("discount_cents") is not None else 0)
     sale["items"] = items
-    ts_row = db.execute("SELECT trainer_name, session_date_time FROM trainer_sessions WHERE sale_id=?", (sale_id,)).fetchone()
+    ts_row = db.execute("SELECT trainer_name, session_date_time, session_label FROM trainer_sessions WHERE sale_id=?", (sale_id,)).fetchone()
     if ts_row:
         sale["trainer_name"] = ts_row["trainer_name"]
         sale["session_date_time"] = ts_row["session_date_time"]
+        if ts_row["session_label"]:
+            sale["session_type"] = ts_row["session_label"]
     return sale
 
 
@@ -1586,9 +1588,14 @@ def create_trainer_session(data: TrainerSessionCreate):
         """, (sale_id, prod["id"], prod["name"], price_cents, price_cents))
 
         cur_ts = db.execute("""
-            INSERT INTO trainer_sessions (sale_id, customer_id, customer_name, product_id, trainer_id, trainer_name, session_date_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (sale_id, customer_id, customer_name, prod["id"], trainer["id"], trainer["name"], formatted_session_dt))
+            INSERT INTO trainer_sessions (
+                sale_id, customer_id, customer_name, product_id, trainer_id,
+                trainer_name, session_date_time, session_label
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            sale_id, customer_id, customer_name, prod["id"], trainer["id"],
+            trainer["name"], formatted_session_dt, data.session_label
+        ))
         ts_id = cur_ts.lastrowid
 
         return {
@@ -1599,7 +1606,7 @@ def create_trainer_session(data: TrainerSessionCreate):
             "customer_id": customer_id,
             "customer_name": customer_name,
             "customer_type": customer_type,
-            "session_type": prod["name"],
+            "session_type": data.session_label or prod["name"],
             "trainer_id": trainer["id"],
             "trainer_name": trainer["name"],
             "session_date_time": formatted_session_dt,

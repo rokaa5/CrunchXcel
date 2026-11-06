@@ -245,6 +245,11 @@ class TrainerSessionCreate(AppBaseModel):
     new_customer: Customer | None = None
     trainer_id: int = Field(gt=0)
     product_id: int = Field(gt=0)
+    session_label: Literal[
+        "Personal Trainer - Daily Session",
+        "Personal Trainer - Monthly-basis Session",
+        "Personal Trainer Session",
+    ] | None = None
     session_datetime: str | None = None
     payment_method: Literal["Cash", "E-Wallet"]
     amount_tendered: Decimal = Field(ge=0, max_digits=12, decimal_places=2)

@@ -974,10 +974,9 @@ def delete_customer():
 
 def customer_management():
     submenu("CUSTOMER MANAGEMENT", [
-        ("Register New Customer", add_customer),
         ("View All Customers", view_customers),
         ("Update Customer Information", update_customer),
-        ("Delete Customer", delete_customer)
+        ("Delete Customer", delete_customer),
     ])
 
 
@@ -1533,10 +1532,7 @@ def select_sale_customer(title):
     while True:
         header(title, input_screen=False, width=58)
         print("[1] Member (discounted rate)")
-        if title == "TRAINER SESSION":
-            print("[2] Non-member (identify customer after choosing trainer)")
-        else:
-            print("[2] Non-member (regular rate)")
+        print("[2] Non-member (regular rate)")
         print("-" * 58)
         print("[0] Back")
         print("-" * 58)
@@ -2118,26 +2114,11 @@ def delete_product():
             pause()
 
 
-def record_purchase(customer=None):
-    if customer:
-        customer_id = customer["id"]
-        customer_name = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
-        ov = request("GET", f"/customers/{customer_id}/overview")
-        if ov:
-            if ov.get("yearly_status") == "Active":
-                membership_label = "Active (Yearly)"
-            elif ov.get("monthly_status") == "Active":
-                membership_label = "Active (Monthly)"
-            else:
-                membership_label = ov.get("yearly_label", "Not Registered")
-        else:
-            membership_label = "Not Registered"
-    else:
-        chosen = select_sale_customer("SERVICES/PRODUCTS")
-        if chosen is None:
-            return
-        customer_id, customer_name, membership_label = chosen
-
+def record_purchase():
+    """Physical product sales remain anonymous; only the sale and receipt are recorded."""
+    customer_id = None
+    customer_name = "Walk-in"
+    membership_label = "Anonymous purchase"
     cart = []
     manage_purchase_cart(customer_id, customer_name, membership_label, cart)
 
@@ -2230,7 +2211,7 @@ def pick_purchase_items(customer_id, customer_name, membership_label, cart):
     for p in all_products:
         if p.get("is_active", 1) != 1:
             continue
-        if p.get("category") in ("Membership", "Coaching") or p.get("name") in ("Yearly membership", "Monthly session", "Daily session"):
+        if p.get("type") != "Product":
             continue
         eligible_items.append(p)
 
@@ -2411,162 +2392,234 @@ def checkout_purchase(customer_id, customer_name, membership_label, cart, quote_
         return True
 
 
-def select_trainer_nonmember():
-    """Every trainer booking must be linked to an identifiable customer."""
-    columns = [
-        ("ID", "id", 4),
-        ("Name", lambda c: f"{c.get('first_name', '')} {c.get('last_name', '')}".strip(), 22),
-        ("Yearly", "yearly_status", 11),
-        ("Phone", lambda c: mask_phone(c.get("phone", "")), 12),
-    ]
+def trainer_session_label(product):
+    """Show one clear session-type name regardless of customer membership."""
+    name = product["name"].lower()
+    if "monthly" in name:
+        return "Personal Trainer - Monthly-basis Session"
+    if "daily" in name:
+        return "Personal Trainer - Daily Session"
+    return "Personal Trainer Session"
+
+
+def identify_trainer_customer():
+    """Identify customers by full name; collect new customer details only if necessary."""
     while True:
-        header("TRAINER CUSTOMER", input_screen=False, width=58)
-        print("[1] Select Existing Non-member")
-        print("[2] Register New Customer")
-        print("-" * 58)
-        print("[0] Back")
-        print("-" * 58)
-        choice = input("Choice: ").strip().lower()
-        if choice in ("0", "b", "back", "cancel"):
+        header("TRAINER CUSTOMER", input_screen=False, width=66)
+        print("Enter the customer's full name to check existing records.")
+        print("Use at least a first and last name. [0] Back")
+        print("-" * 66)
+        try:
+            full_name = ask_name("Full name", prompt="Customer full name: ")
+        except GoBack:
             return None
-        if choice == "1":
-            try:
-                customer = select_customer_from_list(
-                    "SELECT NON-MEMBER", "book a trainer session",
-                    eligibility="non_yearly",
-                    empty_message="No non-members registered yet. Register a new customer.",
-                    columns=columns, width=66,
-                )
-            except GoBack:
-                continue
-            if customer:
-                name = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
-                return customer["id"], name, None
-        elif choice == "2":
-            try:
-                new = collect_new_customer_data("REGISTER TRAINER CUSTOMER")
-            except GoBack:
-                continue
-            name = f"{new['first_name']} {new['last_name']}"
-            return None, name, new
-        else:
-            print("Invalid choice.")
+
+        parts = full_name.split(" ", 1)
+        if len(parts) != 2 or not parts[1].strip():
+            print("Enter both the first and last name.")
             pause()
+            continue
+
+        customers = request("GET", "/customers")
+        if customers is None:
+            pause()
+            return None
+
+        normalize = lambda value: " ".join(value.casefold().split())
+        matches = [
+            cust for cust in customers
+            if normalize(f"{cust.get('first_name', '')} {cust.get('last_name', '')}") == normalize(full_name)
+        ]
+        selected = None
+        register_new = not matches
+
+        if len(matches) == 1:
+            selected = matches[0]
+        elif len(matches) > 1:
+            page = 0
+            while True:
+                total_pages = (len(matches) + PAGE_SIZE - 1) // PAGE_SIZE
+                header("MATCHING CUSTOMERS", input_screen=False, width=76)
+                print(f"Multiple customers are named {full_name}. Select the correct ID.")
+                print("-" * 76)
+                print(f"{'ID':<5} | {'Customer':<25} | {'Phone':<13} | {'Yearly':<12}")
+                print("-" * 76)
+                for cust in matches[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]:
+                    name = f"{cust['first_name']} {cust['last_name']}"[:25]
+                    print(f"{cust['id']:<5} | {name:<25} | {mask_phone(cust.get('phone', '')):<13} | {cust.get('yearly_status', 'None'):<12}")
+                print("-" * 76)
+                print(f"Page {page + 1} of {total_pages}")
+                if page + 1 < total_pages:
+                    print("[N] Next")
+                if page > 0:
+                    print("[P] Previous")
+                print("[R] Register a different person with this name")
+                print("[0] Back")
+                pick = input("Customer ID or choice: ").strip().lower()
+                if pick in ("0", "b", "back"):
+                    return None
+                if pick in ("n", "next") and page + 1 < total_pages:
+                    page += 1
+                    continue
+                if pick in ("p", "previous") and page > 0:
+                    page -= 1
+                    continue
+                if pick in ("r", "register"):
+                    register_new = True
+                    break
+                if pick.isdecimal():
+                    selected = next((cust for cust in matches if cust["id"] == int(pick)), None)
+                    if selected is not None:
+                        break
+                print("Select a listed customer ID or an available option.")
+                pause()
+
+        if selected is not None:
+            customer_name = f"{selected['first_name']} {selected['last_name']}"
+            member = selected.get("yearly_status") == "Active"
+            return {
+                "customer_id": selected["id"],
+                "customer_name": customer_name,
+                "new_customer": None,
+                "is_member": member,
+            }
+
+        if register_new:
+            header("NEW TRAINER CUSTOMER", input_screen=False, width=66)
+            print(f"No selected customer record for: {full_name}")
+            print("A phone number is needed to identify the customer in future bookings.")
+            print("The customer will be saved only after purchase confirmation.")
+            print("[0] Back")
+            print("-" * 66)
+            try:
+                phone = ask_phone("Phone: ")
+            except GoBack:
+                return None
+
+            phone_match = next((cust for cust in customers if cust.get("phone") == phone), None)
+            if phone_match:
+                print(f"Phone already belongs to customer ID {phone_match['id']}.")
+                print("Check the name and try again to avoid duplicate records.")
+                pause()
+                continue
+
+            return {
+                "customer_id": None,
+                "customer_name": full_name,
+                "new_customer": {
+                    "first_name": parts[0],
+                    "last_name": parts[1],
+                    "phone": phone,
+                },
+                "is_member": False,
+            }
 
 
 def trainer_session_flow():
     while True:
-        chosen = select_sale_customer("TRAINER SESSION")
-        if chosen is None:
-            return
-        customer_id, customer_name, member_tag = chosen
-        customer_type = "Member" if customer_id is not None else "Non-member"
-
-        if customer_id is not None:
-            count_data = request("GET", f"/customers/{customer_id}/trainer-sessions/count-this-month")
-            sessions_count = count_data.get("count", 0) if count_data else 0
-        else:
-            sessions_count = 0
-
         all_products = request("GET", "/products")
-        if not all_products:
-            print("\nThere are no services available.")
+        if all_products is None:
             pause()
-            continue
+            return
 
         coaching_items = [
             p for p in all_products
             if p.get("category") == "Coaching" and p.get("is_active", 1) == 1
         ]
+        # The session-type list is identical for members and non-members.
+        session_types = [
+            p for p in coaching_items if p.get("applies_to") in ("Members only", "Anyone")
+        ] or coaching_items
+        if not session_types:
+            header("TRAINER SESSION", input_screen=False)
+            print("No trainer session types are available.")
+            pause()
+            return
 
-        if customer_type == "Member":
-            eligible_sessions = [p for p in coaching_items if p.get("applies_to") in ("Anyone", "Members only")]
-        else:
-            eligible_sessions = [p for p in coaching_items if p.get("applies_to") in ("Anyone", "Non-members only")]
-
-        if not eligible_sessions:
-            print("\nNo coaching session types available for this customer.")
+        header("TRAINER SESSION", input_screen=False, width=64)
+        print("Select a session type.")
+        print("-" * 64)
+        for index, item in enumerate(session_types, 1):
+            print(f"[{index}] {trainer_session_label(item)}")
+        print("-" * 64)
+        print("[0] Back")
+        print("-" * 64)
+        pick = input("Choice: ").strip().lower()
+        if pick in ("0", "b", "back"):
+            return
+        if not pick.isdecimal() or not 1 <= int(pick) <= len(session_types):
+            print("Invalid session type.")
             pause()
             continue
 
-        width = 62
-        chosen_session = None
-        while True:
-            header("TRAINER SESSION", input_screen=False, width=width)
-            print(f"Customer: {customer_name} | {member_tag}")
-            if customer_id is not None:
-                print(f"Trainer sessions this month: {sessions_count}")
-            print("=" * width)
-            print(f"{'ID':<4} | {'Session Type':<40} | {'Price':>10}")
-            print("-" * width)
-            for p in eligible_sessions:
-                print(f"{p['id']:<4} | {p['name'][:40]:<40} | {format_currency(p['price']):>10}")
-            print("-" * width)
-            print("[0] Cancel")
-            print("-" * width)
+        requested_session = session_types[int(pick) - 1]
+        selected_label = trainer_session_label(requested_session)
 
-            val = input("Enter session type ID: ").strip()
-            low = val.lower()
-            if low in ("0", "cancel", "b", "back"):
-                break
-            if not val.isdigit():
-                print("Session type not available for this customer")
-                pause()
-                continue
+        trainers = request("GET", "/trainers", params={"status": "Active"})
+        if not trainers:
+            header("TRAINER SESSION", input_screen=False)
+            print("No active trainers available.")
+            pause()
+            return
 
-            sid = int(val)
-            matched = next((p for p in eligible_sessions if p["id"] == sid), None)
-            if not matched:
-                print("Session type not available for this customer")
-                pause()
-                continue
+        header("SELECT TRAINER", input_screen=False, width=64)
+        print(f"Session: {selected_label}")
+        print("-" * 64)
+        for index, trainer in enumerate(trainers, 1):
+            print(f"[{index}] {trainer['name']}")
+        print("-" * 64)
+        print("[0] Back")
+        t_choice = input("Choice: ").strip().lower()
+        if t_choice in ("0", "b", "back"):
+            continue
+        if not t_choice.isdecimal() or not 1 <= int(t_choice) <= len(trainers):
+            print("Invalid trainer.")
+            pause()
+            continue
+        chosen_trainer = trainers[int(t_choice) - 1]
 
-            chosen_session = matched
-            break
+        identified = identify_trainer_customer()
+        if identified is None:
+            continue
+
+        customer_id = identified["customer_id"]
+        customer_name = identified["customer_name"]
+        new_customer = identified["new_customer"]
+        is_member = identified["is_member"]
+
+        if is_member and requested_session.get("applies_to") != "Non-members only":
+            chosen_session = requested_session
+        elif not is_member and requested_session.get("applies_to") == "Anyone":
+            chosen_session = requested_session
+        else:
+            eligible_rate = "Members only" if is_member else "Non-members only"
+            chosen_session = next(
+                (p for p in coaching_items if p.get("applies_to") == eligible_rate),
+                None,
+            )
 
         if not chosen_session:
-            continue
-
-        trainers = request("GET", "/trainers?status=Active")
-        if not trainers:
-            print("\nNo active trainers available.")
+            header("TRAINER SESSION", input_screen=False)
+            print("No trainer rate is configured for this customer type.")
             pause()
             continue
 
-        chosen_trainer = None
-        while True:
-            header("TRAINER SESSION", input_screen=False, width=58)
-            print(f"Customer:     {customer_name}")
-            print(f"Session Type: {chosen_session['name']}")
-            print("-" * 58)
-            print("Trainer:")
-            for idx, t in enumerate(trainers, 1):
-                print(f"[{idx}] {t['name']}")
-            print("-" * 58)
-            print("[0] Cancel")
-            print("-" * 58)
-            t_choice = input("Choice: ").strip()
-            if t_choice in ("0", "cancel", "b", "back"):
-                break
-            if not t_choice.isdigit() or int(t_choice) < 1 or int(t_choice) > len(trainers):
-                print("Invalid choice")
-                pause()
-                continue
-            chosen_trainer = trainers[int(t_choice) - 1]
-            break
-
-        if not chosen_trainer:
+        member_tag = "Active yearly member" if is_member else "Non-member"
+        price = Decimal(str(chosen_session["price"]))
+        header("TRAINER BOOKING", input_screen=False, width=64)
+        print(f"Session:    {selected_label}")
+        print(f"Trainer:    {chosen_trainer['name']}")
+        print(f"Customer:   {customer_name}")
+        if customer_id is not None:
+            print(f"Customer ID: {customer_id}")
+        else:
+            print("Customer ID: Assigned after payment")
+        print(f"Rate:       {member_tag}")
+        print(f"Total:      {format_currency(price)}")
+        print("-" * 64)
+        print("Press Enter to choose a booking date, or 0 to cancel.")
+        if input("Continue: ").strip().lower() in ("0", "b", "back", "cancel"):
             continue
-
-        new_customer = None
-        if customer_type == "Non-member":
-            identified = select_trainer_nonmember()
-            if identified is None:
-                continue
-            customer_id, customer_name, new_customer = identified
-            if customer_id is not None:
-                count_data = request("GET", f"/customers/{customer_id}/trainer-sessions/count-this-month")
-                sessions_count = count_data.get("count", 0) if count_data else 0
 
         now_dt = ph_now()
         today_str = now_dt.strftime("%Y-%m-%d")
@@ -2647,8 +2700,11 @@ def trainer_session_flow():
                         break
                     try:
                         tendered = Decimal(tendered_input)
+                        if not tendered.is_finite() or tendered.as_tuple().exponent < -2:
+                            print("Enter a finite amount with at most two decimal places.")
+                            continue
                         if tendered < price:
-                            print("Amount is less than the total due")
+                            print("Amount is less than the total due.")
                             continue
                         change = tendered - price
                         break
@@ -2663,7 +2719,8 @@ def trainer_session_flow():
 
             header("CONFIRM TRAINER SESSION", input_screen=False, width=58)
             print(f"Customer:        {customer_name}")
-            print(f"Session type:    {chosen_session['name']}")
+            print(f"Session type:    {selected_label}")
+            print(f"Membership:      {member_tag}")
             print(f"Trainer:         {chosen_trainer['name']}")
             print(f"Session date:    {session_time[:10]}")
             print(f"Session time:    {session_time[11:16]}")
@@ -2684,6 +2741,7 @@ def trainer_session_flow():
                 "new_customer": new_customer,
                 "trainer_id": chosen_trainer["id"],
                 "product_id": chosen_session["id"],
+                "session_label": selected_label,
                 "session_datetime": session_time,
                 "payment_method": pay_method,
                 "amount_tendered": str(tendered),
@@ -3125,8 +3183,8 @@ def sales_reports():
 
 def main():
     submenu("GYM MANAGEMENT SYSTEM", [
-        ("Customer Management", customer_management),
         ("Product/Service Management", product_service_management),
+        ("Customer Management", customer_management),
         ("Payment Management", payment_management),
         ("Search Records", search_records),
         ("Sales Reports", sales_reports),
