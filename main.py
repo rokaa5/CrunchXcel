@@ -1,5 +1,6 @@
 
 import os
+import shutil
 import re
 import sys
 import textwrap
@@ -639,6 +640,11 @@ def page_nav_options(page, total_pages, include_back=True):
     return "        ".join(nav)
 
 
+def print_controls(text, width):
+    available = min(width, shutil.get_terminal_size(fallback=(120, 24)).columns)
+    print(textwrap.fill(text, width=max(1, available), break_long_words=False, break_on_hyphens=False))
+
+
 def render_data_table(title, records, columns, page, width=None, always_show_back=False, banner=None, footer_text=None, cancel_label=False, compact=False):
     width = table_width(columns, width or 0)
     total_records = len(records)
@@ -654,20 +660,22 @@ def render_data_table(title, records, columns, page, width=None, always_show_bac
         print_table_row(rec, columns, compact=compact)
 
     print("-" * width)
-    print(f"Page {page} of {total_pages}    Showing {start + 1}-{end} of {total_records}")
-    if footer_text:
-        print(footer_text)
+    summary = f"Page {page} of {total_pages}    Showing {start + 1}-{end} of {total_records}"
+    navigation = ""
     if total_pages > 1 or always_show_back:
+        navigation = page_nav_options(page, total_pages, include_back=True)
         if cancel_label:
-            nav = []
-            if page < total_pages:
-                nav.append("[>] Next")
-            if page > 1:
-                nav.append("[<] Previous")
-            nav.append("[0] Cancel")
-            print("   ".join(nav))
-        else:
-            print(page_nav_options(page, total_pages, include_back=True))
+            navigation = navigation.replace("[0] Back", "[0] Cancel").replace("        ", "   ")
+    if compact:
+        print_controls(summary + ("    " + navigation if navigation else ""), width)
+        if footer_text:
+            print(footer_text)
+    else:
+        print(summary)
+        if footer_text:
+            print(footer_text)
+        if navigation:
+            print(navigation)
     print()
 
 
@@ -1242,10 +1250,10 @@ def view_plan_memberships(plan_name, status="all"):
         page = min(page, pages)
         header(title, input_screen=False, width=width)
         print(f"Status: {status.title()}    Records: {len(records)}    Page {page} of {pages}")
-        print_table_header(columns)
+        print_table_header(columns, compact=True)
         print("-" * width)
         for record in records[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]:
-            print_table_row(record, columns)
+            print_table_row(record, columns, compact=True)
         if not records:
             print("No matching memberships found.")
         print("-" * width)
@@ -1316,6 +1324,7 @@ def register_plan(plan_name):
                 customer = select_customer_from_list(
                     title,
                     "register a membership",
+                    compact=True,
                     eligibility=eligibility,
                     empty_message=empty_msg,
                     columns=cols,
@@ -1456,6 +1465,7 @@ def renew_plan(plan_name):
             customer = select_customer_from_list(
                 title,
                 "renew",
+                compact=True,
                 eligibility=eligibility,
                 empty_message=empty_msg,
                 columns=renew_columns,
@@ -1765,7 +1775,7 @@ def refund_purchase_session():
     """Issue a full refund against an existing sale; keep the original receipt for audit."""
     page = 1
     query = ""
-    page_size = 7
+    page_size = PAGE_SIZE
     width = 130
     columns = [
         ("Receipt No.", "reference", 12),
@@ -1797,17 +1807,19 @@ def refund_purchase_session():
             print(f"Search filter: {query}")
         print(f"Eligible sales: {len(eligible)}   |   Page {page} of {total_pages}")
         print("-" * width)
-        print_table_header(columns)
+        print_table_header(columns, compact=True)
         print("-" * width)
         if eligible:
             for transaction in visible:
-                print_table_row(transaction, columns)
+                print_table_row(transaction, columns, compact=True)
         else:
             print("No eligible sales found.")
         print("-" * width)
-        print("[S] Search by customer, item, or receipt")
-        print("[>] Next page     [<] Previous page     [C] Clear search")
-        print("[0] Back")
+        controls = "[S] Search by customer, item, or receipt"
+        if total_pages > 1:
+            controls += "    [<] Previous page    [>] Next page"
+        controls += "    [C] Clear search    [0] Back"
+        print_controls(controls, width)
         print()
         choice = input("Receipt number or choice: ").strip()
         lower = choice.casefold()
