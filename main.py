@@ -3030,6 +3030,8 @@ def display_sales_report(title, period):
         return
 
     page = 1
+    transaction_page = 1
+    transaction_page_size = 8
     total_pages = len(data)
     width = 78
 
@@ -3048,11 +3050,16 @@ def display_sales_report(title, period):
         print("-" * width)
         print(f"Voided sales excluded: {record.get('voided_count', 0)}")
 
+        tx_total_pages = 1
         if period == "daily" and record.get("transactions"):
-            print("\nTransactions:")
+            transactions = record["transactions"]
+            tx_total_pages = max(1, (len(transactions) + transaction_page_size - 1) // transaction_page_size)
+            transaction_page = min(transaction_page, tx_total_pages)
+            begin_index = (transaction_page - 1) * transaction_page_size
+            print(f"\nTransactions: Page {transaction_page} of {tx_total_pages}")
             print(f"{'Receipt No.':<12} | {'Time':<5} | {'Item Name':<30} | {'Total':>10} | {'Status':<9}")
             print("-" * width)
-            for tx in record["transactions"][:10]:
+            for tx in transactions[begin_index:begin_index + transaction_page_size]:
                 print_table_row(tx, [
                     ("Receipt No.", "receipt_no", 12),
                     ("Time", "time", 5),
@@ -3060,8 +3067,6 @@ def display_sales_report(title, period):
                     ("Total", lambda row: format_currency(row["total"]), 10, "right"),
                     ("Status", "status", 9),
                 ])
-            if len(record["transactions"]) > 10:
-                print(f"... and {len(record['transactions']) - 10} more transactions.")
 
         print("-" * width)
         nav = [f"Period {page} of {total_pages}"]
@@ -3071,15 +3076,30 @@ def display_sales_report(title, period):
             nav.append("[P] Previous")
         nav.append("[0] Back")
         print(" | ".join(nav))
+        if tx_total_pages > 1:
+            tx_nav = []
+            if transaction_page < tx_total_pages:
+                tx_nav.append("[>] Next transaction page")
+            if transaction_page > 1:
+                tx_nav.append("[<] Previous transaction page")
+            print(" | ".join(tx_nav))
 
         choice = input("Choice: ").strip().lower()
         if choice in ("0", "b", "back"):
             return
+        if choice == ">" and transaction_page < tx_total_pages:
+            transaction_page += 1
+            continue
+        if choice == "<" and transaction_page > 1:
+            transaction_page -= 1
+            continue
         if choice in ("n", "next") and page < total_pages:
             page += 1
+            transaction_page = 1
             continue
         if choice in ("p", "prev", "previous") and page > 1:
             page -= 1
+            transaction_page = 1
             continue
 
 
