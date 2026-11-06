@@ -1054,6 +1054,44 @@ def list_payments(method: str = "", search: str = ""):
     return formatted
 
 
+TRANSACTION_CATEGORY_ORDER = ("yearly", "monthly", "daily", "trainer", "products")
+
+
+def classify_transaction(kind, items, description=""):
+    """Classify saved transaction items without altering historical sale records."""
+    categories = set()
+    for item in items:
+        name = str(item.get("item_name") or item.get("name") or "").casefold()
+        category = str(item.get("category") or "").casefold()
+        item_type = str(item.get("type") or "").casefold()
+
+        if item_type == "product" or category in ("beverage", "supplement", "merchandise"):
+            categories.add("products")
+        elif category == "coaching" or "personal trainer" in name:
+            categories.add("trainer")
+        elif "monthly" in name:
+            categories.add("monthly")
+        elif "yearly" in name or category == "membership":
+            categories.add("yearly")
+        elif "daily" in name or category == "gym access":
+            categories.add("daily")
+
+    if not categories:
+        label = (str(description) + " " + str(kind)).casefold()
+        if "personal trainer" in label or "coaching" in label or "trainer" in label:
+            categories.add("trainer")
+        elif "monthly" in label:
+            categories.add("monthly")
+        elif "yearly" in label or "membership" in label:
+            categories.add("yearly")
+        elif "daily" in label:
+            categories.add("daily")
+        elif str(kind).casefold() == "product":
+            categories.add("products")
+
+    return [category for category in TRANSACTION_CATEGORY_ORDER if category in categories]
+
+
 @app.get("/transactions/search")
 def search_transactions(scope: str = "all", query: str = ""):
     """List all unique receipts/payments and optionally filter across every field.
@@ -1209,7 +1247,7 @@ def search_transactions(scope: str = "all", query: str = ""):
         for sale in sales_rows:
             items = db.execute("""
                 SELECT si.item_name, si.quantity, si.product_id, si.category,
-                       pr.name AS current_name
+                       pr.name AS current_name, pr.type AS type
                 FROM sale_items si
                 LEFT JOIN products pr ON pr.id = si.product_id
                 WHERE si.sale_id = ? ORDER BY si.id
@@ -1226,6 +1264,9 @@ def search_transactions(scope: str = "all", query: str = ""):
                 if trainer and trainer["session_label"]:
                     descriptions = [trainer["session_label"]]
 
+            sale_categories = classify_transaction(sale["kind"], [
+                dict(item) for item in items
+            ], description=" ".join(descriptions))
             results.append({
                 "reference": sale["receipt_no"],
                 "record_type": "sale",
@@ -1237,6 +1278,7 @@ def search_transactions(scope: str = "all", query: str = ""):
                 "amount": money(sale["total_cents"]),
                 "payment_method": sale["payment_method"],
                 "status": sale["status"],
+                "categories": sale_categories,
                 "product_ids": [row["product_id"] for row in items],
                 "search_text": " ".join(
                     [sale["customer_name"], sale["receipt_no"]]
@@ -1249,7 +1291,7 @@ def search_transactions(scope: str = "all", query: str = ""):
 
         for payment in payment_rows:
             purchased = db.execute("""
-                SELECT pr.id AS product_id, pr.name, pr.category, pu.quantity
+                SELECT pr.id AS product_id, pr.name, pr.category, pr.type, pu.quantity
                 FROM purchases pu JOIN products pr ON pr.id = pu.product_id
                 WHERE pu.payment_id = ? ORDER BY pu.id
             """, (payment["id"],)).fetchall()
@@ -1257,6 +1299,9 @@ def search_transactions(scope: str = "all", query: str = ""):
                 f"{item['quantity']} x {item['name']}" if item["quantity"] > 1 else item["name"]
                 for item in purchased
             ]
+            legacy_categories = classify_transaction("payment", [
+                dict(item) for item in purchased
+            ], description=payment["description"])
             results.append({
                 "reference": f"PAY-{payment['id']:06d}",
                 "record_type": "payment",
@@ -1268,6 +1313,7 @@ def search_transactions(scope: str = "all", query: str = ""):
                 "amount": money(payment["amount_cents"]),
                 "payment_method": payment["method"],
                 "status": "Completed",
+                "categories": legacy_categories,
                 "product_ids": [row["product_id"] for row in purchased],
                 "search_text": " ".join(
                     [payment["customer_name"], payment["description"], f"PAY-{payment['id']:06d}"]

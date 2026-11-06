@@ -2872,18 +2872,28 @@ def show_legacy_payment_details(transaction):
 
 
 def search_transactions_ui():
-    """Show every receipt first, with a single search box below the table."""
+    """Browse compact transaction entries with category shortcuts and one search box."""
+    filters = {
+        "1": ("yearly", "Yearly Membership"),
+        "2": ("monthly", "Monthly Session"),
+        "3": ("daily", "Daily Session"),
+        "4": ("trainer", "Trainer Service"),
+        "5": ("products", "Products"),
+        "a": (None, "All Transactions"),
+    }
+    labels = {
+        "yearly": "Yearly Membership",
+        "monthly": "Monthly Session",
+        "daily": "Daily Session",
+        "trainer": "Trainer Service",
+        "products": "Products",
+    }
+    selected_category = None
+    category_name = "All Transactions"
     query = ""
     page = 1
-    page_size = 8
-    width = 80
-    columns = [
-        ("Receipt No.", "reference", 12),
-        ("Date/Time", lambda r: r["created_at"][5:16], 11),
-        ("Product/Service", "item_names", 25),
-        ("Amount", lambda r: format_currency(r["amount"]), 10, "right"),
-        ("Status", "status", 9),
-    ]
+    page_size = 5
+    width = 78
 
     while True:
         params = {"query": query} if query else None
@@ -2892,46 +2902,76 @@ def search_transactions_ui():
             pause()
             return
 
+        if selected_category is not None:
+            transactions = [
+                row for row in transactions
+                if selected_category in row.get("categories", [])
+            ]
+
         total = len(transactions)
         total_pages = max(1, (total + page_size - 1) // page_size)
         page = min(page, total_pages)
-        start = (page - 1) * page_size
-        visible = transactions[start:start + page_size]
+        visible = transactions[(page - 1) * page_size:page * page_size]
 
         header("SEARCH TRANSACTIONS", input_screen=False, width=width)
+        print(f"Category: {category_name} | {total} records | Page {page} of {total_pages}")
         if query:
-            print(f"Search: {query}")
-        else:
-            print("All purchases, memberships and trainer services")
-        print(f"Transactions: {total} | Page {page} of {total_pages}")
+            for line in wrap_cell(f"Search: {query}", width):
+                print(line)
         print("-" * width)
-        print(" | ".join(format_cell(col[0], col[2], col[3] if len(col) > 3 else "left") for col in columns))
-        print("-" * width)
-        if visible:
-            for transaction in visible:
-                print_table_row(transaction, columns)
-                if transaction.get("customer_id") is not None:
-                    print(
-                        f"  Customer: {transaction['customer_name']} "
-                        f"(ID {transaction['customer_id']})"
-                    )
-        else:
-            print("No matching transactions found.")
-        print("-" * width)
-        print(page_nav_options(page, total_pages))
-        print("Enter a customer, product/service, ID, or receipt to search.")
-        print("To distinguish IDs, use item:8, customer:2, or payment:1.")
-        print("Enter an R-/PAY- receipt from the results to view its details.")
-        print("Press Enter to show all transactions.")
-        value = input("Search or Receipt: ").strip()
-        normalized = value.lower()
+
+        if not visible:
+            print("No transactions found for this category or search.")
+        for transaction in visible:
+            receipt = str(transaction["reference"])
+            name_lines = wrap_cell(transaction.get("item_names") or "Transaction", 43)
+            amount = format_currency(transaction["amount"])
+
+            print(f"{receipt:<12} {name_lines[0]:<43} {amount:>14}")
+            for continuation in name_lines[1:]:
+                print(f"{'':12} {continuation}")
+
+            categories = transaction.get("categories", [])
+            category_text = ", ".join(labels.get(cat, "Other") for cat in categories) or "Other"
+            created = str(transaction["created_at"])[:16]
+            metadata = f"{created} | {category_text} | {transaction['status']}"
+            if transaction.get("customer_id") is not None:
+                metadata += (
+                    f" | {transaction['customer_name']} "
+                    f"(ID {transaction['customer_id']})"
+                )
+            for line in wrap_cell(metadata, width - 2):
+                print(f"  {line}")
+            print("-" * width)
+
+        print("FILTER  [1] Yearly  [2] Monthly  [3] Daily")
+        print("        [4] Trainer [5] Products [A] All")
+        print("NAV     [N] Next  [P] Previous [0] Back")
+        print("SEARCH  Type a name, item, service or receipt below.")
+        print("        For IDs use customer:3, item:8, payment:1")
+        print("        Press Enter to clear the search.")
+        value = input("Choice / Search: ").strip()
+        normalized = value.casefold()
+
         if normalized in ("0", "b", "back"):
             return
-        if normalized in ("n", "next") and page < total_pages:
-            page += 1
+        if normalized in filters:
+            selected_category, category_name = filters[normalized]
+            page = 1
             continue
-        if normalized in ("p", "prev", "previous") and page > 1:
-            page -= 1
+        if normalized in ("n", "next"):
+            if page < total_pages:
+                page += 1
+            else:
+                print("Already on the last page.")
+                pause()
+            continue
+        if normalized in ("p", "prev", "previous"):
+            if page > 1:
+                page -= 1
+            else:
+                print("Already on the first page.")
+                pause()
             continue
         if not value:
             query = ""
@@ -2939,7 +2979,8 @@ def search_transactions_ui():
             continue
 
         selected = next(
-            (row for row in transactions if row["reference"].lower() == normalized),
+            (record for record in transactions
+             if record["reference"].casefold() == normalized),
             None,
         )
         if selected:
@@ -2949,7 +2990,7 @@ def search_transactions_ui():
                 show_legacy_payment_details(selected)
             continue
 
-        # Optional prefixes such as item:8 or customer:2 resolve ID collisions.
+        # Search stays within the selected category until [A] All is chosen.
         query = value
         page = 1
 

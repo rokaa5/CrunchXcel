@@ -299,5 +299,63 @@ class TransactionSearchTests(unittest.TestCase):
         self.assertEqual(report["transactions"][0]["status"], "Voided")
 
 
+    def test_transaction_category_classification(self):
+        cases = [
+            ("membership", [{"item_name": "Yearly membership", "category": "Membership"}], "", ["yearly"]),
+            ("membership", [{"item_name": "Monthly session", "category": "Gym Access"}], "", ["monthly"]),
+            ("daily_session", [{"item_name": "Daily session", "category": "Gym Access"}], "", ["daily"]),
+            ("trainer", [{"item_name": "Personal trainer, non-member", "category": "Coaching"}], "", ["trainer"]),
+            ("product", [{"item_name": "Bottled water", "category": "Beverage", "type": "Product"}], "", ["products"]),
+            ("payment", [], "Plan: Yearly membership", ["yearly"]),
+            ("payment", [], "Plan: Monthly session", ["monthly"]),
+            ("payment", [], "Legacy unknown fee", []),
+        ]
+        for kind, items, description, expected in cases:
+            with self.subTest(kind=kind, description=description, items=items):
+                self.assertEqual(
+                    api.classify_transaction(kind, items, description), expected
+                )
+
+    def test_category_metadata_in_saved_receipts(self):
+        member_id = self.customer()
+        member = api.create_membership(MembershipRegistration(
+            customer_id=member_id, plan="Yearly membership",
+            start_date=ph_today(), end_date=ph_today() + timedelta(days=365),
+            method="Cash", amount_tendered=Decimal("300.00"),
+        ))
+        product = self.sale()
+        daily = api.create_daily_session(DailySessionCreate(
+            customer_id=None,
+            payment_method="Cash",
+            amount_tendered=Decimal("70.00"),
+        ))
+        transactions = {
+            row["reference"]: row
+            for row in api.search_transactions()
+        }
+        self.assertEqual(transactions[member["sale"]["receipt_no"]]["categories"], ["yearly"])
+        self.assertEqual(transactions[product["receipt_no"]]["categories"], ["products"])
+        self.assertEqual(transactions[daily["receipt_no"]]["categories"], ["daily"])
+
+    def test_legacy_payment_category_is_inferred_from_description(self):
+        member_id = self.customer()
+        with database.connect() as db:
+            p = db.execute(
+                "INSERT INTO payments "
+                "(customer_id, description, amount_cents, method, created_at) "
+                "VALUES (?, 'Plan: Monthly session', 120000, 'Cash', ?)",
+                (member_id, ph_now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            payment_id = p.lastrowid
+        transactions = {
+            row["reference"]: row
+            for row in api.search_transactions()
+        }
+        self.assertEqual(
+            transactions[f"PAY-{payment_id:06d}"]["categories"],
+            ["monthly"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
