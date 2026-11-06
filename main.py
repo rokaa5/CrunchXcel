@@ -1532,10 +1532,7 @@ def select_sale_customer(title):
     while True:
         header(title, input_screen=False, width=58)
         print("[1] Member (discounted rate)")
-        if title == "TRAINER SESSION":
-            print("[2] Non-member (identify customer after choosing trainer)")
-        else:
-            print("[2] Non-member (regular rate)")
+        print("[2] Non-member (regular rate)")
         print("-" * 58)
         print("[0] Back")
         print("-" * 58)
@@ -2214,7 +2211,7 @@ def pick_purchase_items(customer_id, customer_name, membership_label, cart):
     for p in all_products:
         if p.get("is_active", 1) != 1:
             continue
-        if p.get("category") in ("Membership", "Coaching") or p.get("name") in ("Yearly membership", "Monthly session", "Daily session"):
+        if p.get("type") != "Product":
             continue
         eligible_items.append(p)
 
@@ -2703,8 +2700,11 @@ def trainer_session_flow():
                         break
                     try:
                         tendered = Decimal(tendered_input)
+                        if not tendered.is_finite() or tendered.as_tuple().exponent < -2:
+                            print("Enter a finite amount with at most two decimal places.")
+                            continue
                         if tendered < price:
-                            print("Amount is less than the total due")
+                            print("Amount is less than the total due.")
                             continue
                         change = tendered - price
                         break
