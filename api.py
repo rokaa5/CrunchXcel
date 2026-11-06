@@ -2360,16 +2360,19 @@ def membership_report():
             "active": sum(m["status"] == "Active" for m in yearly),
             "expired": sum(m["status"] == "Expired" for m in yearly),
             "upcoming": sum(m["status"] == "Upcoming" for m in yearly),
+            "cancelled": sum(m["status"] == "Cancelled" for m in yearly),
             "total": len(yearly)
         },
         "monthly": {
             "active": sum(m["status"] == "Active" for m in monthly),
             "expired": sum(m["status"] == "Expired" for m in monthly),
             "upcoming": sum(m["status"] == "Upcoming" for m in monthly),
+            "cancelled": sum(m["status"] == "Cancelled" for m in monthly),
             "total": len(monthly)
         },
         "active": sum(m["status"] == "Active" for m in memberships),
         "expired": sum(m["status"] == "Expired" for m in memberships),
         "upcoming": sum(m["status"] == "Upcoming" for m in memberships),
+        "cancelled": sum(m["status"] == "Cancelled" for m in memberships),
         "total": len(memberships)
     }
