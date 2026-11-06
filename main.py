@@ -1533,7 +1533,10 @@ def select_sale_customer(title):
     while True:
         header(title, input_screen=False, width=58)
         print("[1] Member (discounted rate)")
-        print("[2] Non-member (regular rate)")
+        if title == "TRAINER SESSION":
+            print("[2] Non-member (identify customer after choosing trainer)")
+        else:
+            print("[2] Non-member (regular rate)")
         print("-" * 58)
         print("[0] Back")
         print("-" * 58)
@@ -2412,6 +2415,49 @@ def checkout_purchase(customer_id, customer_name, membership_label, cart, quote_
         return True
 
 
+def select_trainer_nonmember():
+    """Every trainer booking must be linked to an identifiable customer."""
+    columns = [
+        ("ID", "id", 4),
+        ("Name", lambda c: f"{c.get('first_name', '')} {c.get('last_name', '')}".strip(), 22),
+        ("Yearly", "yearly_status", 11),
+        ("Phone", lambda c: mask_phone(c.get("phone", "")), 12),
+    ]
+    while True:
+        header("TRAINER CUSTOMER", input_screen=False, width=58)
+        print("[1] Select Existing Non-member")
+        print("[2] Register New Customer")
+        print("-" * 58)
+        print("[0] Back")
+        print("-" * 58)
+        choice = input("Choice: ").strip().lower()
+        if choice in ("0", "b", "back", "cancel"):
+            return None
+        if choice == "1":
+            try:
+                customer = select_customer_from_list(
+                    "SELECT NON-MEMBER", "book a trainer session",
+                    eligibility="non_yearly",
+                    empty_message="No non-members registered yet. Register a new customer.",
+                    columns=columns, width=66,
+                )
+            except GoBack:
+                continue
+            if customer:
+                name = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
+                return customer["id"], name, None
+        elif choice == "2":
+            try:
+                new = collect_new_customer_data("REGISTER TRAINER CUSTOMER")
+            except GoBack:
+                continue
+            name = f"{new['first_name']} {new['last_name']}"
+            return None, name, new
+        else:
+            print("Invalid choice.")
+            pause()
+
+
 def trainer_session_flow():
     while True:
         chosen = select_sale_customer("TRAINER SESSION")
@@ -2516,6 +2562,16 @@ def trainer_session_flow():
         if not chosen_trainer:
             continue
 
+        new_customer = None
+        if customer_type == "Non-member":
+            identified = select_trainer_nonmember()
+            if identified is None:
+                continue
+            customer_id, customer_name, new_customer = identified
+            if customer_id is not None:
+                count_data = request("GET", f"/customers/{customer_id}/trainer-sessions/count-this-month")
+                sessions_count = count_data.get("count", 0) if count_data else 0
+
         now_dt = ph_now()
         today_str = now_dt.strftime("%Y-%m-%d")
         now_time_str = now_dt.strftime("%H:%M")
@@ -2534,9 +2590,6 @@ def trainer_session_flow():
                 session_date = datetime.strptime(d_input, "%Y-%m-%d").date()
             except ValueError:
                 print("Enter a valid date as YYYY-MM-DD")
-                continue
-            if session_date > now_dt.date():
-                print("The date cannot be in the future")
                 continue
             break
 
@@ -2562,9 +2615,6 @@ def trainer_session_flow():
                 parsed_time = datetime.strptime(t_input, "%H:%M").time()
             except ValueError:
                 print("Enter a valid time as HH:MM (for example 14:30)")
-                continue
-            if datetime.combine(session_date, parsed_time) > now_dt:
-                print("The time cannot be in the future")
                 continue
             break
 
@@ -2635,11 +2685,13 @@ def trainer_session_flow():
 
             payload = {
                 "customer_id": customer_id,
+                "new_customer": new_customer,
                 "trainer_id": chosen_trainer["id"],
                 "product_id": chosen_session["id"],
                 "session_datetime": session_time,
                 "payment_method": pay_method,
-                "amount_tendered": str(tendered)
+                "amount_tendered": str(tendered),
+                "request_id": str(uuid.uuid4()),
             }
             res = request("POST", "/trainer-sessions", payload)
             if not res:
@@ -2650,6 +2702,7 @@ def trainer_session_flow():
             print(f"Receipt no.: {res['receipt_no']}")
             print(f"Date:        {res['created_at']}")
             print(f"Customer:    {res['customer_name']}")
+            print(f"Customer ID: {res['customer_id']}")
             print("-" * 58)
             print(f"{res['session_type']}")
             print(f"Trainer: {res['trainer_name']}")
