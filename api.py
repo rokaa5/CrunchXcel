@@ -2268,6 +2268,13 @@ def sales_report(period: str = "daily"):
                     LIMIT 1
                 """, (payment["id"],)).fetchone())
                 for payment in legacy_payments
+            ) + sum(
+                bool(db.execute("""
+                    SELECT 1 FROM sale_items
+                    WHERE sale_id = ? AND category IN ('Beverage', 'Supplement', 'Merchandise')
+                    LIMIT 1
+                """, (refund["sale_id"],)).fetchone())
+                for refund in refund_rows
             )
 
             records.append({
