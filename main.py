@@ -3285,6 +3285,9 @@ def daily_transactions():
         {"date": day["period"], **record}
         for day in periods for record in day.get("transactions", [])
     ]
+    gross = sum(Decimal(str(day.get("gross_sales", day.get("total_sales", "0"))).replace(",", "")) for day in periods)
+    refunds = sum(Decimal(str(day.get("refunds_total", "0")).replace(",", "")) for day in periods)
+    net = gross - refunds
     transactions.sort(
         key=lambda row: (row["date"], row.get("time", ""), row["receipt_no"]),
         reverse=True,
@@ -3312,6 +3315,7 @@ def daily_transactions():
     while True:
         header("DAILY TRANSACTIONS", input_screen=False, width=width)
         print(f"Transactions: {len(transactions)}    Page {page} of {pages}")
+        print(f"Gross Sales: {format_currency(gross)}    Refunds: -{format_currency(refunds)}    Net Sales: {format_currency(net)}")
         print("-" * width)
         print_table_header(columns)
         print("-" * width)
