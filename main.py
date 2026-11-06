@@ -565,7 +565,7 @@ def table_width(columns, minimum=0):
     return max(minimum, sum(col[2] for col in columns) + len(TABLE_SEPARATOR) * (len(columns) - 1))
 
 
-def print_table_header(columns):
+def print_table_header(columns, compact=False):
     print()
     cells = []
     for col in columns:
@@ -573,7 +573,8 @@ def print_table_header(columns):
         align = col[3] if len(col) > 3 else "left"
         cells.append(format_cell(label, width, align))
     print(TABLE_SEPARATOR.join(cells))
-    print()
+    if not compact:
+        print()
 
 
 def format_cell(value, width, align="left"):
@@ -582,7 +583,7 @@ def format_cell(value, width, align="left"):
     return first.rjust(width) if align == "right" else first.ljust(width)
 
 
-def print_table_row(rec, columns):
+def print_table_row(rec, columns, compact=False):
     wrapped_cols = []
     for col in columns:
         _, getter, w = col[0], col[1], col[2]
@@ -601,7 +602,8 @@ def print_table_row(rec, columns):
             else:
                 row_cells.append(" " * w)
         print(TABLE_SEPARATOR.join(row_cells))
-    print()
+    if not compact:
+        print()
 
 
 def mask_phone(phone: str) -> str:
@@ -637,7 +639,7 @@ def page_nav_options(page, total_pages, include_back=True):
     return "        ".join(nav)
 
 
-def render_data_table(title, records, columns, page, width=None, always_show_back=False, banner=None, footer_text=None, cancel_label=False):
+def render_data_table(title, records, columns, page, width=None, always_show_back=False, banner=None, footer_text=None, cancel_label=False, compact=False):
     width = table_width(columns, width or 0)
     total_records = len(records)
     total_pages = (total_records + PAGE_SIZE - 1) // PAGE_SIZE
@@ -645,11 +647,11 @@ def render_data_table(title, records, columns, page, width=None, always_show_bac
     end = min(start + PAGE_SIZE, total_records)
 
     header(title, input_screen=False, width=width, banner=banner)
-    print_table_header(columns)
+    print_table_header(columns, compact=compact)
     print("-" * width)
 
     for rec in records[start:end]:
-        print_table_row(rec, columns)
+        print_table_row(rec, columns, compact=compact)
 
     print("-" * width)
     print(f"Page {page} of {total_pages}    Showing {start + 1}-{end} of {total_records}")
@@ -683,7 +685,7 @@ def render_update_customer_list(customers, page):
     render_customer_selection_list("UPDATE CUSTOMER", customers, page)
 
 
-def select_customer_from_list(title, empty_action, eligibility=None, empty_message=None, columns=None, width=56, on_not_found=None, banner=None):
+def select_customer_from_list(title, empty_action, eligibility=None, empty_message=None, columns=None, width=56, on_not_found=None, banner=None, compact=False):
     page = 1
     params = {"eligibility": eligibility} if eligibility else None
     active_banner = banner
@@ -709,7 +711,7 @@ def select_customer_from_list(title, empty_action, eligibility=None, empty_messa
             ("Membership", "membership", 10),
             ("Subscription", "subscription", 12),
         ]
-        render_data_table(title, customers, cols, page, width=width, always_show_back=True, banner=active_banner)
+        render_data_table(title, customers, cols, page, width=width, always_show_back=True, banner=active_banner, compact=compact)
         active_banner = None
 
         while True:
@@ -1248,10 +1250,10 @@ def view_plan_memberships(plan_name, status="all"):
             print("No matching memberships found.")
         print("-" * width)
         print()
-        print("[1] Active        [2] Expired        [3] All")
+        controls = "[1] Active        [2] Expired        [3] All"
         if pages > 1:
-            print("[<] Previous page                  [>] Next page")
-        print("[0] Back")
+            controls += "        [<] Previous page        [>] Next page"
+        print(controls + "        [0] Back")
         choice = input("Choice: ").strip().casefold()
         if choice in ("0", "b", "back"):
             return
@@ -1615,6 +1617,7 @@ def select_sale_customer(title):
                 empty_message="No active yearly members found.",
                 columns=columns,
                 width=62,
+                compact=True,
             )
         except GoBack:
             continue

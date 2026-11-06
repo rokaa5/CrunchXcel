@@ -1,12 +1,28 @@
 """Shared table spacing keeps records distinct without splitting wrapped cells."""
 import io
 import unittest
+from unittest.mock import patch
 from contextlib import redirect_stdout
 
 import main
 
 
 class TableSpacingTests(unittest.TestCase):
+    def test_select_active_member_only_uses_compact_spacing(self):
+        customer = dict(id=3, first_name='Yearly', last_name='Member',
+                        yearly_status='Active', yearly_end_date='2027-11-07')
+        output = io.StringIO()
+        with (patch.object(main, 'header'),
+              patch.object(main, 'request', return_value=[customer]),
+              patch('builtins.input', side_effect=['1', '3']), redirect_stdout(output)):
+            result = main.select_sale_customer('DAILY SESSION')
+        self.assertEqual(result[0], 3)
+        lines = output.getvalue().splitlines()
+        heading = next(i for i, line in enumerate(lines) if 'Expires' in line)
+        self.assertTrue(lines[heading + 1].startswith('---'))
+        self.assertIn('Yearly Member', lines[heading + 2])
+        self.assertTrue(lines[heading + 3].startswith('---'))
+
     def test_header_and_records_have_vertical_space(self):
         columns = [('ID', 'id', 4), ('Name', 'name', 12)]
         output = io.StringIO()

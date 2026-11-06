@@ -40,6 +40,10 @@ class NavigationTests(unittest.TestCase):
                 for view in views:
                     self.assertIn('[0] Back', view)
                     self.assertNotIn('[B] Back', view)
+                    control_line = next(line for line in view.splitlines() if '[1] Active' in line)
+                    self.assertIn('[2] Expired', control_line)
+                    self.assertIn('[3] All', control_line)
+                    self.assertIn('[0] Back', control_line)
 
     def test_page_controls_only_above_ten_and_filter_resets_page(self):
         for count in [0, 10, 11]:
