@@ -138,6 +138,8 @@ class RefundTests(unittest.TestCase):
         self.assertEqual(overview["lifetime_spending"], "0.00")
         report = api.membership_report()
         self.assertEqual(report["yearly"]["active"], 0)
+        self.assertEqual(report["yearly"]["cancelled"], 1)
+        self.assertEqual(report["cancelled"], 1)
         self.assertEqual(api.get_customer_memberships(cid)[0]["status"], "Cancelled")
 
     def test_monthly_membership_summary_counts_current_monthly_plan(self):
@@ -154,6 +156,7 @@ class RefundTests(unittest.TestCase):
         self.assertEqual(api.membership_report()["monthly"]["active"], 1)
         self.refund(result["sale_id"])
         self.assertEqual(api.membership_report()["monthly"]["active"], 0)
+        self.assertEqual(api.membership_report()["monthly"]["cancelled"], 1)
 
     def test_trainer_refund_cancels_booking(self):
         with database.connect() as db:
