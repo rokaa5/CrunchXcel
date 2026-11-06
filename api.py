@@ -504,12 +504,14 @@ def get_customer_overview(customer_id: int):
             discount_eligibility = "Standard / None"
 
         total_purchases = db.execute(
-            "SELECT COUNT(*) FROM sales WHERE customer_id = ? AND status = 'Completed'",
+            """SELECT COUNT(*) FROM sales s WHERE customer_id = ? AND status = 'Completed'
+               AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.sale_id = s.id)""",
             (customer_id,)
         ).fetchone()[0]
 
         sales_cents = db.execute(
-            "SELECT COALESCE(SUM(total_cents), 0) FROM sales WHERE customer_id = ? AND status = 'Completed'",
+            """SELECT COALESCE(SUM(total_cents), 0) FROM sales s WHERE customer_id = ? AND status = 'Completed'
+               AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.sale_id = s.id)""",
             (customer_id,)
         ).fetchone()[0]
 
@@ -589,6 +591,7 @@ def get_customer_sales(customer_id: int):
         """, (customer_id,)))
         for s in sales_rows:
             sale_id = s["id"]
+            s["status"] = display_sale_status(db, sale_id, s["status"])
             items = rows(db.execute("SELECT * FROM sale_items WHERE sale_id = ?", (sale_id,)))
             s["total"] = money(s.pop("total_cents"))
             s["amount_tendered"] = money(s.pop("amount_tendered_cents"))
@@ -1744,6 +1747,7 @@ def list_sales(search: str = "", status: str = "", date: str = ""):
         records = rows(db.execute(query, params))
         for sale in records:
             sale_id = sale["id"]
+            sale["status"] = display_sale_status(db, sale_id, sale["status"])
             items = rows(db.execute("SELECT * FROM sale_items WHERE sale_id=?", (sale_id,)))
             sale["total"] = money(sale.pop("total_cents"))
             sale["amount_tendered"] = money(sale.pop("amount_tendered_cents"))
@@ -1842,6 +1846,8 @@ def customer_trainer_sessions_count(customer_id: int):
             JOIN sales s ON s.id = ts.sale_id
             WHERE ts.customer_id = ?
               AND s.status = 'Completed'
+              AND ts.cancelled_at IS NULL
+              AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.sale_id = s.id)
               AND strftime('%Y-%m', ts.session_date_time) = ?
         """, (customer_id, current_month)).fetchone()[0]
         return {"customer_id": customer_id, "month": current_month, "count": count}
