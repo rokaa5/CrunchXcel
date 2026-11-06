@@ -3041,32 +3041,8 @@ def products_services():
 
 def search_customer():
     """Search registered customers by ID, first name, surname, or full name."""
-    header("SEARCH CUSTOMER", input_screen=False, width=90)
-    print("Enter an ID, first name, last name, or full name.")
-    print("Examples: 3, David, Domingo, David Domingo")
-    print("A single name matches either first or last name.")
-    print("[0] Back")
-    print("-" * 90)
-    term = input("Search: ").strip()
-    if term in ("", "0"):
-        return
     records = request("GET", "/customers")
     if records is None:
-        pause()
-        return
-    needle = " ".join(term.casefold().split())
-    matches = [
-        row for row in records
-        if (str(row.get("id")) == term if term.isdecimal() else
-            needle in " ".join(
-                f"{row.get('first_name', '')} {row.get('last_name', '')}".casefold().split()
-            ) or any(
-                needle in str(row.get(field, "")).casefold()
-                for field in ("first_name", "last_name")
-            ))
-    ]
-    if not matches:
-        print("No matching customers.")
         pause()
         return
     columns = [
@@ -3075,10 +3051,40 @@ def search_customer():
         ("Last Name", "last_name", 25),
         ("Phone", lambda r: mask_phone(r.get("phone", "")), 17),
     ]
-    paginated_view(
-        "CUSTOMER SEARCH RESULTS", lambda: matches, columns,
-        empty_message="No matching customers.", sort_key=None, width=90,
-    )
+    query, page = "", 1
+    while True:
+        needle = " ".join(query.casefold().split())
+        matches = [row for row in records if not needle or (
+            needle in str(row.get("id", "")) if needle.isdecimal() else
+            needle in " ".join(
+                f"{row.get('first_name', '')} {row.get('last_name', '')}".casefold().split()
+            )
+        )]
+        pages = max(1, (len(matches) + PAGE_SIZE - 1) // PAGE_SIZE)
+        page = min(page, pages)
+        header("SEARCH CUSTOMER", input_screen=False, width=90)
+        print(f"Records: {len(matches)}    Page {page} of {pages}")
+        if query:
+            print(f"Search: {query}")
+        print_table_header(columns)
+        for row in matches[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]:
+            print_table_row(row, columns)
+        if not matches:
+            print("No matching customers.")
+        print("-" * 90)
+        if pages > 1:
+            print("[<] Previous page     [>] Next page")
+        print("[C] Clear search     [0] Back")
+        choice = input("Search by ID or name: ").strip()
+        key = choice.casefold()
+        if key in ("0", "b", "back"):
+            return
+        if key in ("<", ">"):
+            page = max(1, page - 1) if key == "<" else min(pages, page + 1)
+        elif key in ("c", "clear"):
+            query, page = "", 1
+        else:
+            query, page = choice, 1
 
 
 def show_legacy_payment_details(transaction):
@@ -3117,7 +3123,7 @@ def show_refund_details(refund_id):
 
 
 def search_transactions_ui():
-    """Choose a category first; search and receipt actions belong to its table."""
+    """Browse all transactions and switch categories within the table."""
     categories = {
         "1": ("yearly", "Yearly Membership"),
         "2": ("monthly", "Monthly Session"),
@@ -3136,86 +3142,78 @@ def search_transactions_ui():
     ]
     width = table_width(columns, 120)
 
+    category, name = categories["6"]
+    query, page = "", 1
+    page_size = PAGE_SIZE
+
     while True:
-        header("SEARCH TRANSACTIONS - CATEGORY", input_screen=False, width=width)
-        for key, (_, name) in categories.items():
-            print(f"[{key}] {name}")
-        print()
-        print("[0] Back")
-        print("-" * width)
-        category_choice = input("Category: ").strip().lower()
-        if category_choice in ("0", "b", "back"):
+        params = {"query": query} if query else None
+        records = request("GET", "/transactions/search", params=params)
+        if records is None:
+            pause()
             return
-        if category_choice not in categories:
-            print("Invalid category.")
+        if category is not None:
+            records = [r for r in records if category in r.get("categories", [])]
+        pages = max(1, (len(records) + page_size - 1) // page_size)
+        page = min(page, pages)
+        visible = records[(page - 1) * page_size:page * page_size]
+        header(f"TRANSACTIONS - {name.upper()}", input_screen=False, width=width)
+        print(f"Records: {len(records)}    Page {page} of {pages}")
+        if query:
+            print(f"Search: {query}")
+        print("-" * width)
+        print_table_header(columns)
+        print("-" * width)
+        for record in visible:
+            print_table_row(record, columns)
+        if not visible:
+            print("No matching transactions.")
+        print("-" * width)
+        for hotkey, (_, label) in categories.items():
+            print(f"[{hotkey}] {label}", end="    ")
+        print()
+        print("[S] Search within this category     [C] Clear search")
+        if pages > 1:
+            print("[<] Previous page                  [>] Next page")
+        print("[0] Back to Search Records")
+        print()
+        print("Enter a receipt number to view details.")
+        choice = input("Choice: ").strip()
+        key = choice.casefold()
+        if key in ("0", "b", "back"):
+            return
+        if key in categories:
+            category, name = categories[key]
+            page = 1
+            continue
+        if key in ("<", "p", "prev"):
+            page = max(1, page - 1)
+            continue
+        if key in (">", "n", "next"):
+            page = min(pages, page + 1)
+            continue
+        if key in ("c", "clear"):
+            query, page = "", 1
+            continue
+        if key in ("s", "search"):
+            print("Search by customer name, product/service, or receipt.")
+            term = input("Search [0 to cancel]: ").strip()
+            if term != "0":
+                query, page = term, 1
+            continue
+        selected = next(
+            (r for r in records if r["reference"].casefold() == key), None
+        )
+        if selected is None:
+            print("Invalid receipt or option.")
             pause()
             continue
-        category, name = categories[category_choice]
-        query = ""
-        page = 1
-        page_size = 10
-
-        while True:
-            params = {"query": query} if query else None
-            records = request("GET", "/transactions/search", params=params)
-            if records is None:
-                pause()
-                return
-            if category is not None:
-                records = [r for r in records if category in r.get("categories", [])]
-            pages = max(1, (len(records) + page_size - 1) // page_size)
-            page = min(page, pages)
-            visible = records[(page - 1) * page_size:page * page_size]
-            header(f"TRANSACTIONS - {name.upper()}", input_screen=False, width=width)
-            print(f"Records: {len(records)}    Page {page} of {pages}")
-            if query:
-                print(f"Search: {query}")
-            print("-" * width)
-            print_table_header(columns)
-            print("-" * width)
-            for record in visible:
-                print_table_row(record, columns)
-            if not visible:
-                print("No matching transactions.")
-            print("-" * width)
-            print("[S] Search within this category     [C] Clear search")
-            print("[<] Previous page                  [>] Next page")
-            print("[0] Back to categories")
-            print()
-            print("Enter a receipt number to view details.")
-            choice = input("Choice: ").strip()
-            key = choice.casefold()
-            if key in ("0", "b", "back"):
-                break
-            if key in ("<", "p", "prev"):
-                page = max(1, page - 1)
-                continue
-            if key in (">", "n", "next"):
-                page = min(pages, page + 1)
-                continue
-            if key in ("c", "clear"):
-                query, page = "", 1
-                continue
-            if key in ("s", "search"):
-                print("Search by customer name, product/service, or receipt.")
-                print("IDs: customer:3, item:8, payment:1")
-                term = input("Search [0 to cancel]: ").strip()
-                if term != "0":
-                    query, page = term, 1
-                continue
-            selected = next(
-                (r for r in records if r["reference"].casefold() == key), None
-            )
-            if selected is None:
-                print("Invalid receipt or option.")
-                pause()
-                continue
-            if selected["record_type"] == "sale":
-                view_sale_details(selected["record_id"])
-            elif selected["record_type"] == "refund":
-                show_refund_details(selected["record_id"])
-            else:
-                show_legacy_payment_details(selected)
+        if selected["record_type"] == "sale":
+            view_sale_details(selected["record_id"])
+        elif selected["record_type"] == "refund":
+            show_refund_details(selected["record_id"])
+        else:
+            show_legacy_payment_details(selected)
 
 
 def view_sale_details(sale_id):
