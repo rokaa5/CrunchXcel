@@ -974,10 +974,9 @@ def delete_customer():
 
 def customer_management():
     submenu("CUSTOMER MANAGEMENT", [
-        ("Register New Customer", add_customer),
         ("View All Customers", view_customers),
         ("Update Customer Information", update_customer),
-        ("Delete Customer", delete_customer)
+        ("Delete Customer", delete_customer),
     ])
 
 
@@ -2118,26 +2117,11 @@ def delete_product():
             pause()
 
 
-def record_purchase(customer=None):
-    if customer:
-        customer_id = customer["id"]
-        customer_name = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
-        ov = request("GET", f"/customers/{customer_id}/overview")
-        if ov:
-            if ov.get("yearly_status") == "Active":
-                membership_label = "Active (Yearly)"
-            elif ov.get("monthly_status") == "Active":
-                membership_label = "Active (Monthly)"
-            else:
-                membership_label = ov.get("yearly_label", "Not Registered")
-        else:
-            membership_label = "Not Registered"
-    else:
-        chosen = select_sale_customer("SERVICES/PRODUCTS")
-        if chosen is None:
-            return
-        customer_id, customer_name, membership_label = chosen
-
+def record_purchase():
+    """Physical product sales remain anonymous; only the sale and receipt are recorded."""
+    customer_id = None
+    customer_name = "Walk-in"
+    membership_label = "Anonymous purchase"
     cart = []
     manage_purchase_cart(customer_id, customer_name, membership_label, cart)
 
@@ -3125,8 +3109,8 @@ def sales_reports():
 
 def main():
     submenu("GYM MANAGEMENT SYSTEM", [
-        ("Customer Management", customer_management),
         ("Product/Service Management", product_service_management),
+        ("Customer Management", customer_management),
         ("Payment Management", payment_management),
         ("Search Records", search_records),
         ("Sales Reports", sales_reports),
