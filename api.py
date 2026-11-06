@@ -1280,7 +1280,7 @@ def search_transactions(scope: str = "all", query: str = ""):
                 "item_names": ", ".join(descriptions) or sale["kind"].replace("_", " ").title(),
                 "amount": money(sale["total_cents"]),
                 "payment_method": sale["payment_method"],
-                "status": sale["status"],
+                "status": display_sale_status(db, sale["id"], sale["status"]),
                 "categories": sale_categories,
                 "product_ids": [row["product_id"] for row in items],
                 "search_text": " ".join(
@@ -1323,6 +1323,62 @@ def search_transactions(scope: str = "all", query: str = ""):
                     + [part for row in purchased for part in (row["name"], row["category"])]
                     + descriptions
                 ),
+            })
+
+    # Refunds are independent accounting movements dated when issued.
+    # They can be searched alongside their original receipts.
+    with connect() as db:
+        refund_rows = rows(db.execute("""
+            SELECT r.*, s.receipt_no, s.customer_id, s.customer_name, s.kind
+            FROM refunds r JOIN sales s ON s.id = r.sale_id
+            ORDER BY r.created_at DESC, r.id DESC
+        """))
+        for refund in refund_rows:
+            items = rows(db.execute("""
+                SELECT si.item_name, si.quantity, si.category, si.product_id,
+                       pr.type, pr.name AS current_name
+                FROM sale_items si LEFT JOIN products pr ON pr.id = si.product_id
+                WHERE si.sale_id = ? ORDER BY si.id
+            """, (refund["sale_id"],)))
+            descriptions = [
+                f"{item['quantity']} x {item['item_name']}" if item["quantity"] > 1 else item["item_name"]
+                for item in items
+            ]
+            ref = f"REF-{refund['id']:06d}"
+            categories = classify_transaction(refund["kind"], items, " ".join(descriptions))
+            search_text = " ".join(
+                [ref, refund["receipt_no"], refund["customer_name"], refund["reason"], "Refund"]
+                + [str(v) for item in items for v in (item["item_name"], item["category"], item["current_name"] or "")]
+                + descriptions
+            )
+            if scope == "customer":
+                if numeric_id is not None and refund["customer_id"] != numeric_id:
+                    continue
+                if numeric_id is None and term.casefold() not in refund["customer_name"].casefold():
+                    continue
+            elif scope == "item":
+                if numeric_id is not None and numeric_id not in [item["product_id"] for item in items]:
+                    continue
+                if numeric_id is None and term.casefold() not in search_text.casefold():
+                    continue
+            elif scope == "payment" and term:
+                if numeric_id is not None or term.casefold() not in ref.casefold():
+                    continue
+            results.append({
+                "reference": ref,
+                "record_type": "refund",
+                "record_id": refund["id"],
+                "created_at": refund["created_at"],
+                "customer_id": refund["customer_id"],
+                "customer_name": refund["customer_name"],
+                "item_names": "Refund: " + (", ".join(descriptions) or refund["receipt_no"]),
+                "amount": "-" + money(refund["amount_cents"]),
+                "payment_method": refund["method"],
+                "status": "Refunded",
+                "categories": categories,
+                "related_receipt": refund["receipt_no"],
+                "product_ids": [row["product_id"] for row in items],
+                "search_text": search_text,
             })
 
     if scope == "all" and term:
