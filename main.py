@@ -2910,12 +2910,18 @@ def search_transactions_ui():
         if visible:
             for transaction in visible:
                 print_table_row(transaction, columns)
+                if transaction.get("customer_id") is not None:
+                    print(
+                        f"  Customer: {transaction['customer_name']} "
+                        f"(ID {transaction['customer_id']})"
+                    )
         else:
             print("No matching transactions found.")
         print("-" * width)
         print(page_nav_options(page, total_pages))
-        print("Enter a name, product/service, customer/item ID, or receipt to search.")
-        print("Enter an exact R-/PAY- receipt from the results to view its details.")
+        print("Enter a customer, product/service, ID, or receipt to search.")
+        print("To distinguish IDs, use item:8, customer:2, or payment:1.")
+        print("Enter an R-/PAY- receipt from the results to view its details.")
         print("Press Enter to show all transactions.")
         value = input("Search or Receipt: ").strip()
         normalized = value.lower()
