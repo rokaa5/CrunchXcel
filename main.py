@@ -2987,7 +2987,7 @@ def view_sale_details(sale_id):
         if sale["status"] == "Voided":
             print(f"Voided At:      {sale.get('voided_at', '-')}")
             print(f"Void Reason:    {sale.get('void_reason', '-')}")
-        print("-" * 60)
+        print("-" * 64)
         print(f"{'Item Name':<30} | {'Qty':>4} | {'Price':>10} | {'Amount':>10}")
         print("-" * 64)
         for it in sale.get("items", []):
@@ -2997,17 +2997,17 @@ def view_sale_details(sale_id):
                 ("Price", lambda row: format_currency(row["unit_price"]), 10, "right"),
                 ("Amount", lambda row: format_currency(row["line_amount"]), 10, "right"),
             ])
-        print("-" * 60)
+        print("-" * 64)
         print(f"{'Total:':<46} {format_currency(sale['total']):>10}")
         print(f"Payment Method: {sale['payment_method']}")
         print(f"{'Amount Tendered:':<46} {format_currency(sale['amount_tendered']):>10}")
         print(f"{'Change:':<46} {format_currency(sale['change']):>10}")
-        print("=" * 60)
+        print("=" * 64)
 
         if sale["status"] == "Completed":
             print("[V] Void sale")
             print("[0] Back")
-            print("-" * 60)
+            print("-" * 64)
             choice = input("Choice: ").strip().lower()
             if choice in ("0", "b", "back"):
                 return
