@@ -1545,13 +1545,30 @@ def renew_plan(plan_name):
             pause()
 
 
+def browse_plan_memberships(plan):
+    while True:
+        header(f"{plan.upper()} - VIEW MEMBERSHIPS", input_screen=False, width=68)
+        print("[1] Active")
+        print("[2] Expired")
+        print("[0] All")
+        print("[B] Back")
+        print("-" * 68)
+        choice = input("Status: ").strip().lower()
+        if choice in ("b", "back"):
+            return
+        statuses = {"1": "active", "2": "expired", "0": "all"}
+        if choice not in statuses:
+            print("Invalid option.")
+            pause()
+            continue
+        view_plan_memberships(plan, statuses[choice])
+
+
 def yearly_membership_menu():
     submenu("YEARLY MEMBERSHIP", [
         ("Register", lambda: register_plan("Yearly membership")),
         ("Renew", lambda: renew_plan("Yearly membership")),
-        ("View All", lambda: view_plan_memberships("Yearly membership", "all")),
-        ("View Active", lambda: view_plan_memberships("Yearly membership", "active")),
-        ("View Expired", lambda: view_plan_memberships("Yearly membership", "expired")),
+        ("View Memberships", lambda: browse_plan_memberships("Yearly membership")),
     ])
 
 
@@ -1559,9 +1576,7 @@ def monthly_session_menu():
     submenu("MONTHLY SESSION", [
         ("Register", lambda: register_plan("Monthly session")),
         ("Renew", lambda: renew_plan("Monthly session")),
-        ("View All", lambda: view_plan_memberships("Monthly session", "all")),
-        ("View Active", lambda: view_plan_memberships("Monthly session", "active")),
-        ("View Expired", lambda: view_plan_memberships("Monthly session", "expired")),
+        ("View Memberships", lambda: browse_plan_memberships("Monthly session")),
     ])
 
 
@@ -1747,12 +1762,14 @@ def refund_purchase_session():
     page = 1
     query = ""
     page_size = 7
-    width = 100
+    width = 130
     columns = [
         ("Receipt No.", "reference", 12),
         ("Product / Service", "item_names", 43),
         ("Amount", lambda row: format_currency(row["amount"]), 13, "right"),
-        ("Status", "status", 10),
+        ("Status", "status", 11),
+        ("Date", lambda row: str(row.get("created_at", ""))[:10], 12),
+        ("Customer", lambda row: row.get("customer_name") if row.get("customer_id") is not None else "-", 24),
     ]
 
     while True:
@@ -3023,52 +3040,45 @@ def products_services():
 # SEARCH RECORDS
 
 def search_customer():
-    if not guard_customers("search", "SEARCH CUSTOMER BY NAME", input_screen=True):
+    """Search registered customers by ID, first name, surname, or full name."""
+    header("SEARCH CUSTOMER", input_screen=False, width=90)
+    print("Enter an ID, first name, last name, or full name.")
+    print("Examples: 3, David, Domingo, David Domingo")
+    print("A single name matches either first or last name.")
+    print("[0] Back")
+    print("-" * 90)
+    term = input("Search: ").strip()
+    if term in ("", "0"):
         return
-
-    first_name = ask_name("First name")
-    last_name = ask_name("Last name")
-
-    records = request(
-        "GET",
-        "/customers",
-        params={"first_name": first_name, "last_name": last_name}
-    )
-
+    records = request("GET", "/customers")
     if records is None:
         pause()
         return
-
-    if not records:
-        header("SEARCH CUSTOMER BY NAME", input_screen=False)
-        print(f'\nNo customers found matching "{first_name} {last_name}".')
+    needle = " ".join(term.casefold().split())
+    matches = [
+        row for row in records
+        if (str(row.get("id")) == term if term.isdecimal() else
+            needle in " ".join(
+                f"{row.get('first_name', '')} {row.get('last_name', '')}".casefold().split()
+            ) or any(
+                needle in str(row.get(field, "")).casefold()
+                for field in ("first_name", "last_name")
+            ))
+    ]
+    if not matches:
+        print("No matching customers.")
         pause()
         return
-
-    show(records)
-    pause()
-
-
-def search_customer_id():
-    if not guard_customers("search", "SEARCH CUSTOMER BY ID", input_screen=True):
-        return
-
-    customer_id = ask_id()
-
-    result = request(
-        "GET",
-        f"/customers/{customer_id}",
-        silent_404=True
+    columns = [
+        ("ID", "id", 7),
+        ("First Name", "first_name", 25),
+        ("Last Name", "last_name", 25),
+        ("Phone", lambda r: mask_phone(r.get("phone", "")), 17),
+    ]
+    paginated_view(
+        "CUSTOMER SEARCH RESULTS", lambda: matches, columns,
+        empty_message="No matching customers.", sort_key=None, width=90,
     )
-
-    if not result:
-        header("SEARCH CUSTOMER BY ID", input_screen=False)
-        print("\nThat customer was not found.")
-        pause()
-        return
-
-    show(result)
-    pause()
 
 
 def show_legacy_payment_details(transaction):
@@ -3107,150 +3117,105 @@ def show_refund_details(refund_id):
 
 
 def search_transactions_ui():
-    """Browse compact transaction entries with category shortcuts and one search box."""
-    filters = {
+    """Choose a category first; search and receipt actions belong to its table."""
+    categories = {
         "1": ("yearly", "Yearly Membership"),
         "2": ("monthly", "Monthly Session"),
         "3": ("daily", "Daily Session"),
         "4": ("trainer", "Trainer Service"),
         "5": ("products", "Products"),
-        "a": (None, "All Transactions"),
+        "6": (None, "All Transactions"),
     }
-    labels = {
-        "yearly": "Yearly Membership",
-        "monthly": "Monthly Session",
-        "daily": "Daily Session",
-        "trainer": "Trainer Service",
-        "products": "Products",
-    }
-    selected_category = None
-    category_name = "All Transactions"
-    query = ""
-    page = 1
-    page_size = 5
-    width = 98
-    history = []  # Previous category/search states; [0] returns one step at a time.
+    columns = [
+        ("Receipt No.", "reference", 14),
+        ("Date", lambda r: str(r.get("created_at", ""))[:10], 12),
+        ("Time", lambda r: str(r.get("created_at", ""))[11:16], 7),
+        ("Product / Service", "item_names", 44),
+        ("Amount", lambda r: format_currency(r["amount"]), 15, "right"),
+        ("Status", "status", 12),
+    ]
+    width = table_width(columns, 120)
 
     while True:
-        params = {"query": query} if query else None
-        transactions = request("GET", "/transactions/search", params=params)
-        if transactions is None:
-            pause()
-            return
-
-        if selected_category is not None:
-            transactions = [
-                row for row in transactions
-                if selected_category in row.get("categories", [])
-            ]
-
-        total = len(transactions)
-        total_pages = max(1, (total + page_size - 1) // page_size)
-        page = min(page, total_pages)
-        visible = transactions[(page - 1) * page_size:page * page_size]
-
-        header("SEARCH TRANSACTIONS", input_screen=False, width=width)
-        print(f"Category: {category_name}")
-        print(f"Records: {total}                    Page: {page} of {total_pages}")
-        if query:
-            for line in wrap_cell(f"Search: {query}", width):
-                print(line)
+        header("SEARCH TRANSACTIONS - CATEGORY", input_screen=False, width=width)
+        for key, (_, name) in categories.items():
+            print(f"[{key}] {name}")
         print()
+        print("[0] Back")
         print("-" * width)
-
-        if not visible:
-            print("No transactions found for this category or search.")
-        for transaction in visible:
-            receipt = str(transaction["reference"])
-            name_lines = wrap_cell(transaction.get("item_names") or "Transaction", 58)
-            amount = format_currency(transaction["amount"])
-
-            print(f"{receipt:<13}  {name_lines[0]:<58}  {amount:>14}")
-            for continuation in name_lines[1:]:
-                print(f"{'':15}{continuation}")
-
-            categories = transaction.get("categories", [])
-            category_text = ", ".join(labels.get(cat, "Other") for cat in categories) or "Other"
-            created = str(transaction["created_at"])[:16]
-            metadata = f"Date: {created}     Category: {category_text}     Status: {transaction['status']}"
-            for line in wrap_cell(metadata, width - 2):
-                print(f"  {line}")
-            if transaction.get("customer_id") is not None:
-                for line in wrap_cell(
-                    f"Customer: {transaction['customer_name']} (ID {transaction['customer_id']})",
-                    width - 2,
-                ):
-                    print(f"  {line}")
-            print("-" * width)
-
-        print()
-        print("FILTER BY CATEGORY")
-        print("  [1] Yearly Membership      [2] Monthly Session       [3] Daily Session")
-        print("  [4] Trainer Service        [5] Products              [A] All Transactions")
-        print()
-        print("NAVIGATION")
-        print(f"  [<] Previous Page          [>] Next Page            [0] {'Previous View' if history else 'Back to Search Records'}")
-        print()
-        print("SEARCH / RECEIPT")
-        print("  Enter a customer name, product/service name, or receipt number.")
-        print("  For numeric IDs: customer:3    item:8    payment:1")
-        print("  Press Enter to clear the search.")
-        print()
-        value = input("Choice / Search: ").strip()
-        normalized = value.casefold()
-
-        if normalized in ("0", "b", "back"):
-            if history:
-                selected_category, category_name, query, page = history.pop()
-                continue
+        category_choice = input("Category: ").strip().lower()
+        if category_choice in ("0", "b", "back"):
             return
-        if normalized in filters:
-            next_category, next_name = filters[normalized]
-            if next_category != selected_category:
-                history.append((selected_category, category_name, query, page))
-                selected_category, category_name = next_category, next_name
-                page = 1
+        if category_choice not in categories:
+            print("Invalid category.")
+            pause()
             continue
-        if normalized in (">", "n", "next"):
-            if page < total_pages:
-                page += 1
-            else:
-                print("Already on the last page.")
-                pause()
-            continue
-        if normalized in ("<", "p", "prev", "previous"):
-            if page > 1:
-                page -= 1
-            else:
-                print("Already on the first page.")
-                pause()
-            continue
-        if not value:
-            if query:
-                history.append((selected_category, category_name, query, page))
-                query = ""
-                page = 1
-            continue
+        category, name = categories[category_choice]
+        query = ""
+        page = 1
+        page_size = 10
 
-        selected = next(
-            (record for record in transactions
-             if record["reference"].casefold() == normalized),
-            None,
-        )
-        if selected:
+        while True:
+            params = {"query": query} if query else None
+            records = request("GET", "/transactions/search", params=params)
+            if records is None:
+                pause()
+                return
+            if category is not None:
+                records = [r for r in records if category in r.get("categories", [])]
+            pages = max(1, (len(records) + page_size - 1) // page_size)
+            page = min(page, pages)
+            visible = records[(page - 1) * page_size:page * page_size]
+            header(f"TRANSACTIONS - {name.upper()}", input_screen=False, width=width)
+            print(f"Records: {len(records)}    Page {page} of {pages}")
+            if query:
+                print(f"Search: {query}")
+            print("-" * width)
+            print_table_header(columns)
+            print("-" * width)
+            for record in visible:
+                print_table_row(record, columns)
+            if not visible:
+                print("No matching transactions.")
+            print("-" * width)
+            print("[S] Search within this category     [C] Clear search")
+            print("[<] Previous page                  [>] Next page")
+            print("[0] Back to categories")
+            print()
+            print("Enter a receipt number to view details.")
+            choice = input("Choice: ").strip()
+            key = choice.casefold()
+            if key in ("0", "b", "back"):
+                break
+            if key in ("<", "p", "prev"):
+                page = max(1, page - 1)
+                continue
+            if key in (">", "n", "next"):
+                page = min(pages, page + 1)
+                continue
+            if key in ("c", "clear"):
+                query, page = "", 1
+                continue
+            if key in ("s", "search"):
+                print("Search by customer name, product/service, or receipt.")
+                print("IDs: customer:3, item:8, payment:1")
+                term = input("Search [0 to cancel]: ").strip()
+                if term != "0":
+                    query, page = term, 1
+                continue
+            selected = next(
+                (r for r in records if r["reference"].casefold() == key), None
+            )
+            if selected is None:
+                print("Invalid receipt or option.")
+                pause()
+                continue
             if selected["record_type"] == "sale":
                 view_sale_details(selected["record_id"])
             elif selected["record_type"] == "refund":
                 show_refund_details(selected["record_id"])
             else:
                 show_legacy_payment_details(selected)
-            continue
-
-        # Search stays within the selected category until [A] All is chosen.
-        if value != query:
-            history.append((selected_category, category_name, query, page))
-            query = value
-            page = 1
 
 
 def view_sale_details(sale_id):
@@ -3303,8 +3268,7 @@ def view_sale_details(sale_id):
 
 def search_records():
     submenu("SEARCH RECORDS", [
-        ("Search Customer by Name", search_customer),
-        ("Search Customer by ID", search_customer_id),
+        ("Search Customer (Name or ID)", search_customer),
         ("Search Transactions", search_transactions_ui)
     ])
 
@@ -3321,6 +3285,9 @@ def daily_transactions():
         {"date": day["period"], **record}
         for day in periods for record in day.get("transactions", [])
     ]
+    gross = sum(Decimal(str(day.get("gross_sales", day.get("total_sales", "0"))).replace(",", "")) for day in periods)
+    refunds = sum(Decimal(str(day.get("refunds_total", "0")).replace(",", "")) for day in periods)
+    net = gross - refunds
     transactions.sort(
         key=lambda row: (row["date"], row.get("time", ""), row["receipt_no"]),
         reverse=True,
@@ -3348,6 +3315,7 @@ def daily_transactions():
     while True:
         header("DAILY TRANSACTIONS", input_screen=False, width=width)
         print(f"Transactions: {len(transactions)}    Page {page} of {pages}")
+        print(f"Gross Sales: {format_currency(gross)}    Refunds: -{format_currency(refunds)}    Net Sales: {format_currency(net)}")
         print("-" * width)
         print_table_header(columns)
         print("-" * width)
