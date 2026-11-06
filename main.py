@@ -514,6 +514,8 @@ def print_receipt(sale, width=58):
     print(f"Receipt no.: {sale.get('receipt_no', '-')}")
     print(f"Date:        {sale.get('created_at', '-')}")
     print(f"Customer:    {sale.get('customer_name', 'Walk-in')}")
+    if sale.get("customer_id") is not None:
+        print(f"Customer ID: {sale['customer_id']}")
     print("-" * width)
     for it in sale.get("items", []):
         disc_val = Decimal(str(it.get("discount", 0)))
@@ -1354,8 +1356,6 @@ def register_plan(plan_name):
 
         if result:
             print("\nMembership registered successfully!")
-            if new_customer is not None:
-                print(f"New Customer ID: {result['customer_id']}")
             if "sale" in result:
                 print_receipt(result["sale"])
             else:
