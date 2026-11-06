@@ -231,8 +231,14 @@ class DailySessionCreate(AppBaseModel):
         return normalize_method(v)
 
 
-class SaleVoid(AppBaseModel):
-    reason: str = Field(min_length=1)
+class RefundCreate(AppBaseModel):
+    reason: str = Field(min_length=3, max_length=250)
+    refund_method: Literal["Cash", "E-Wallet"]
+
+    @field_validator("refund_method", mode="before")
+    @classmethod
+    def validate_refund_method(cls, value: str) -> str:
+        return normalize_method(value)
 
 
 class Trainer(AppBaseModel):
