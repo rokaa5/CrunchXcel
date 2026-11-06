@@ -1,0 +1,229 @@
+import sqlite3
+from pathlib import Path
+from contextlib import contextmanager
+
+import os
+DB_NAME = os.environ.get("GYM_DB_NAME", "gym.db")
+DB_PATH = Path(__file__).resolve().parent / DB_NAME
+
+CATEGORY_TO_TYPE = {
+    "Membership": "Service",
+    "Gym Access": "Service",
+    "Coaching": "Service",
+    "Beverage": "Product",
+    "Supplement": "Product",
+    "Merchandise": "Product",
+}
+
+DEFAULT_PRODUCTS = [
+    # Membership and Gym Access (Services: IDs 1 to 4)
+    ("Yearly membership", "Membership", "Service", 30000, "Anyone", 1),
+    ("Member session, daily", "Gym Access", "Service", 5000, "Members only", 1),
+    ("Monthly session", "Gym Access", "Service", 120000, "Anyone", 1),
+    ("Walk-in non-member, daily", "Gym Access", "Service", 7000, "Non-members only", 1),
+    # Personal Trainer (Services: IDs 5 to 7)
+    ("Personal trainer, member, daily session", "Coaching", "Service", 12000, "Members only", 1),
+    ("Personal trainer, member, per session (monthly basis)", "Coaching", "Service", 7000, "Members only", 1),
+    ("Personal trainer, non-member", "Coaching", "Service", 14000, "Non-members only", 1),
+    # Drinks (Products: IDs 8 to 13)
+    ("Bottled water", "Beverage", "Product", 1000, "Anyone", 1),
+    ("Cobra", "Beverage", "Product", 2500, "Anyone", 1),
+    ("Sting", "Beverage", "Product", 2500, "Anyone", 1),
+    ("Vitamilk", "Beverage", "Product", 3500, "Anyone", 1),
+    ("Gatorade", "Beverage", "Product", 4000, "Anyone", 1),
+    ("Fit N Right Pineapple", "Beverage", "Product", 4000, "Anyone", 1),
+    # Supplements (Products: IDs 14 to 18)
+    ("Optimum Nutrition Micronized Creatine Powder, 300 g (60 servings)", "Supplement", "Product", 184500, "Anyone", 1),
+    ("ProtHN Monohydrate Creatine Powder, 60 servings", "Supplement", "Product", 120000, "Anyone", 1),
+    ("Optimum Nutrition Superior Amino 2222, 160 tablets", "Supplement", "Product", 190000, "Anyone", 1),
+    ("ProtHN Whey Protein, box", "Supplement", "Product", 180000, "Anyone", 1),
+    ("Mass gainer, bag", "Supplement", "Product", 250000, "Anyone", 1),
+    # Merchandise (Products: ID 19)
+    ("Insulated tumbler (white, pink, or blue)", "Merchandise", "Product", 65000, "Anyone", 1),
+]
+
+
+@contextmanager
+def connect():
+    db = sqlite3.connect(DB_PATH)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys = ON")
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def migrate_customers_table(db):
+    cols = [r[1] for r in db.execute("PRAGMA table_info(customers)").fetchall()]
+    if "name" in cols and "first_name" not in cols:
+        db.execute("ALTER TABLE customers ADD COLUMN first_name TEXT NOT NULL DEFAULT ''")
+        db.execute("ALTER TABLE customers ADD COLUMN last_name TEXT NOT NULL DEFAULT ''")
+        rows = db.execute("SELECT id, name FROM customers").fetchall()
+        for r in rows:
+            parts = r["name"].strip().split(" ", 1)
+            fname = parts[0]
+            lname = parts[1] if len(parts) > 1 else ""
+            db.execute(
+                "UPDATE customers SET first_name=?, last_name=? WHERE id=?",
+                (fname, lname, r["id"])
+            )
+        db.execute("ALTER TABLE customers DROP COLUMN name")
+
+
+def migrate_products_table(db):
+    cols = [r[1] for r in db.execute("PRAGMA table_info(products)").fetchall()]
+    if "type" not in cols:
+        db.execute(
+            "ALTER TABLE products ADD COLUMN type TEXT NOT NULL DEFAULT 'Product' CHECK(type IN ('Service', 'Product'))"
+        )
+    if "applies_to" not in cols:
+        db.execute(
+            "ALTER TABLE products ADD COLUMN applies_to TEXT NOT NULL DEFAULT 'Anyone' CHECK(applies_to IN ('Anyone', 'Members only', 'Non-members only'))"
+        )
+    if "is_active" not in cols:
+        db.execute(
+            "ALTER TABLE products ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1))"
+        )
+
+    rows = db.execute("SELECT id, category, type FROM products").fetchall()
+    for r in rows:
+        mapped_type = CATEGORY_TO_TYPE.get(r["category"], "Service" if r["category"] == "Service" else "Product")
+        if r["type"] != mapped_type:
+            db.execute("UPDATE products SET type=? WHERE id=?", (mapped_type, r["id"]))
+    db.execute("UPDATE products SET name='Monthly session' WHERE id=3")
+    db.execute("UPDATE products SET name='Personal trainer, member, per session (monthly basis)' WHERE id=6")
+
+    db.execute("UPDATE products SET applies_to='Members only' WHERE id IN (2, 5, 6)")
+    db.execute("UPDATE products SET applies_to='Non-members only' WHERE id IN (4, 7)")
+    db.execute("UPDATE products SET applies_to='Anyone' WHERE id NOT IN (2, 4, 5, 6, 7)")
+
+
+def seed_default_products(db):
+    count = db.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+    if count == 0:
+        db.executemany(
+            "INSERT INTO products (name, category, type, price_cents, applies_to, is_active) VALUES (?, ?, ?, ?, ?, ?)",
+            DEFAULT_PRODUCTS
+        )
+
+
+def seed_default_trainers(db):
+    count = db.execute("SELECT COUNT(*) FROM trainers").fetchone()[0]
+    if count == 0:
+        db.executemany(
+            "INSERT INTO trainers (name, status) VALUES (?, ?)",
+            [("Coach Alex", "Active"), ("Coach Mark", "Active")]
+        )
+
+
+def initialize_database():
+    with connect() as db:
+        db.executescript("""
+        CREATE TABLE IF NOT EXISTS customers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            first_name TEXT NOT NULL,
+            last_name TEXT NOT NULL,
+            phone TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS memberships (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER NOT NULL,
+            plan TEXT NOT NULL,
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+            FOREIGN KEY(customer_id) REFERENCES customers(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER NOT NULL,
+            description TEXT NOT NULL,
+            amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+            method TEXT NOT NULL CHECK(method IN ('Cash', 'E-Wallet')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+            FOREIGN KEY(customer_id) REFERENCES customers(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            type TEXT NOT NULL CHECK(type IN ('Service', 'Product')),
+            price_cents INTEGER NOT NULL CHECK(price_cents > 0),
+            applies_to TEXT NOT NULL DEFAULT 'Anyone' CHECK(applies_to IN ('Anyone', 'Members only', 'Non-members only')),
+            is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1))
+        );
+
+        CREATE TABLE IF NOT EXISTS purchases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL CHECK(quantity > 0),
+            unit_price_cents INTEGER NOT NULL,
+            payment_id INTEGER NOT NULL,
+            FOREIGN KEY(customer_id) REFERENCES customers(id),
+            FOREIGN KEY(product_id) REFERENCES products(id),
+            FOREIGN KEY(payment_id) REFERENCES payments(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS sales (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            receipt_no TEXT UNIQUE NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+            customer_id INTEGER,
+            customer_name TEXT NOT NULL,
+            customer_type TEXT NOT NULL CHECK(customer_type IN ('Member', 'Non-member')),
+            total_cents INTEGER NOT NULL CHECK(total_cents > 0),
+            payment_method TEXT NOT NULL CHECK(payment_method IN ('Cash', 'E-Wallet')),
+            amount_tendered_cents INTEGER NOT NULL,
+            change_cents INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'Completed' CHECK(status IN ('Completed', 'Voided')),
+            void_reason TEXT,
+            voided_at TEXT,
+            FOREIGN KEY(customer_id) REFERENCES customers(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS sale_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sale_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
+            item_name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            unit_price_cents INTEGER NOT NULL,
+            quantity INTEGER NOT NULL CHECK(quantity >= 1 AND quantity <= 99),
+            line_amount_cents INTEGER NOT NULL,
+            FOREIGN KEY(sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+            FOREIGN KEY(product_id) REFERENCES products(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS trainers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'Active' CHECK(status IN ('Active', 'Inactive'))
+        );
+
+        CREATE TABLE IF NOT EXISTS trainer_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sale_id INTEGER NOT NULL,
+            customer_id INTEGER,
+            customer_name TEXT NOT NULL,
+            product_id INTEGER NOT NULL,
+            trainer_id INTEGER NOT NULL,
+            trainer_name TEXT NOT NULL,
+            session_date_time TEXT NOT NULL,
+            FOREIGN KEY(sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+            FOREIGN KEY(customer_id) REFERENCES customers(id),
+            FOREIGN KEY(product_id) REFERENCES products(id),
+            FOREIGN KEY(trainer_id) REFERENCES trainers(id)
+        );
+        """)
+        migrate_customers_table(db)
+        migrate_products_table(db)
+        seed_default_products(db)
+        seed_default_trainers(db)

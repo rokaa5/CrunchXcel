@@ -1,0 +1,11 @@
+# Local databases (contain customer data)
+*.db
+*.db.bak_*
+gym.db.bak_*
+
+# Python
+__pycache__/
+*.pyc
+
+# Scratch and test files
+scratch/
