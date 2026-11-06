@@ -708,8 +708,17 @@ def select_customer_from_list(title, empty_action, eligibility=None, empty_messa
         if customers is None:
             return None
         if not customers:
+            # An empty eligibility list does not necessarily mean customers exist.
+            if eligibility:
+                all_customers = request("GET", "/customers")
+                if all_customers is None:
+                    return None
+                msg = "No customer records found." if not all_customers else (
+                    empty_message if empty_message else f"No eligible customers to {empty_action}."
+                )
+            else:
+                msg = "No customer records found."
             header(title, input_screen=False, width=width, banner=active_banner)
-            msg = empty_message if empty_message else f"There are no customers to {empty_action}."
             print(f"\n{msg}")
             pause()
             return None
