@@ -13,7 +13,7 @@ from fastapi import HTTPException
 
 import api
 import database
-from models import Customer, MembershipRegistration, TrainerSessionCreate, ph_now, ph_today
+from models import Customer, DailySessionCreate, MembershipRegistration, TrainerSessionCreate, ph_now, ph_today
 
 
 class PurchaseRegistrationTests(unittest.TestCase):
@@ -108,6 +108,52 @@ class PurchaseRegistrationTests(unittest.TestCase):
         self.assertEqual(err.exception.status_code, 422)
         with database.connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM customers").fetchone()[0], 0)
+
+
+    def test_anonymous_daily_session_saves_receipt_without_customer_visit(self):
+        data = DailySessionCreate(
+            customer_id=None,
+            payment_method="Cash",
+            amount_tendered=Decimal("100.00"),
+            request_id="anonymous-daily-test",
+        )
+        result = api.create_daily_session(data)
+        self.assertIsNone(result["customer_id"])
+        self.assertEqual(result["customer_name"], "Walk-in")
+        self.assertEqual(result["total"], "70.00")
+        self.assertEqual(result["change"], "30.00")
+        self.assertFalse(result["checked_in"])
+        self.assertEqual(len(result["items"]), 1)
+        self.assertEqual(result["items"][0]["quantity"], 1)
+
+        repeated = api.create_daily_session(data)
+        self.assertEqual(repeated["receipt_no"], result["receipt_no"])
+        self.assertFalse(repeated["checked_in"])
+
+        with database.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM sales").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM visits").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM sale_items").fetchone()[0], 1)
+
+    def test_registered_member_daily_session_creates_one_visit(self):
+        customer_id = self.register_plan()["customer_id"]
+        result = api.create_daily_session(DailySessionCreate(
+            customer_id=customer_id,
+            payment_method="Cash",
+            amount_tendered=Decimal("50.00"),
+            request_id="member-daily-test",
+        ))
+        self.assertEqual(result["customer_id"], customer_id)
+        self.assertEqual(result["total"], "50.00")
+        self.assertTrue(result["checked_in"])
+        with database.connect() as db:
+            visit = db.execute(
+                "SELECT customer_id, sale_id FROM visits WHERE sale_id = ?",
+                (result["id"],),
+            ).fetchone()
+            self.assertIsNotNone(visit)
+            self.assertEqual(visit["customer_id"], customer_id)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM visits").fetchone()[0], 1)
 
 
 if __name__ == "__main__":
