@@ -1216,41 +1216,54 @@ def view_customer_visit_history(customer_id, customer_name):
 
 
 def view_plan_memberships(plan_name, status="all"):
-    is_yearly = (plan_name == "Yearly membership")
-    if is_yearly:
-        if status == "active":
-            title = "ACTIVE YEARLY MEMBERSHIPS"
-        elif status == "expired":
-            title = "EXPIRED YEARLY MEMBERSHIPS"
-        else:
-            title = "ALL YEARLY MEMBERSHIPS"
-        empty_msg = "No yearly memberships found."
-    else:
-        if status == "active":
-            title = "ACTIVE MONTHLY SESSIONS"
-        elif status == "expired":
-            title = "EXPIRED MONTHLY SESSIONS"
-        else:
-            title = "ALL MONTHLY SESSIONS"
-        empty_msg = "No monthly sessions found."
-
+    title = "YEARLY MEMBERSHIPS" if plan_name == "Yearly membership" else "MONTHLY SESSIONS"
     columns = [
         ("ID", "id", 4),
         ("Customer", "customer_name", 18),
         ("Start Date", "start_date", 10),
         ("End Date", "end_date", 10),
-        ("Status", "status", 8),
+        ("Status", "status", 10),
     ]
-    sort_key = lambda r: (r.get("customer_id", 0), r.get("start_date", ""), r.get("id", 0))
-
-    paginated_view(
-        title,
-        lambda: request("GET", "/memberships", params={"status": status, "plan": plan_name}),
-        columns,
-        empty_message=empty_msg,
-        sort_key=sort_key,
-        width=62
-    )
+    width = table_width(columns, 68)
+    statuses = {"1": "active", "2": "expired", "3": "all"}
+    page = 1
+    while True:
+        records = request("GET", "/memberships", params={"status": status, "plan": plan_name})
+        if records is None:
+            pause()
+            return
+        records = sorted(records, key=lambda r: (
+            r.get("status", "").casefold() != "active",
+            r.get("customer_id", 0), r.get("start_date", ""), r.get("id", 0),
+        ))
+        pages = max(1, (len(records) + PAGE_SIZE - 1) // PAGE_SIZE)
+        page = min(page, pages)
+        header(title, input_screen=False, width=width)
+        print(f"Status: {status.title()}    Records: {len(records)}    Page {page} of {pages}")
+        print_table_header(columns)
+        print("-" * width)
+        for record in records[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]:
+            print_table_row(record, columns)
+        if not records:
+            print("No matching memberships found.")
+        print("-" * width)
+        print()
+        print("[1] Active        [2] Expired        [3] All")
+        if pages > 1:
+            print("[<] Previous page                  [>] Next page")
+        print("[0] Back")
+        choice = input("Choice: ").strip().casefold()
+        if choice in ("0", "b", "back"):
+            return
+        if choice in statuses:
+            status, page = statuses[choice], 1
+        elif choice in ("<", "p", "prev"):
+            page = max(1, page - 1)
+        elif choice in (">", "n", "next"):
+            page = min(pages, page + 1)
+        else:
+            print("Invalid option.")
+            pause()
 
 
 def register_plan(plan_name):
@@ -1549,22 +1562,7 @@ def renew_plan(plan_name):
 
 
 def browse_plan_memberships(plan):
-    while True:
-        header(f"{plan.upper()} - VIEW MEMBERSHIPS", input_screen=False, width=68)
-        print("[1] Active")
-        print("[2] Expired")
-        print("[0] All")
-        print("[B] Back")
-        print("-" * 68)
-        choice = input("Status: ").strip().lower()
-        if choice in ("b", "back"):
-            return
-        statuses = {"1": "active", "2": "expired", "0": "all"}
-        if choice not in statuses:
-            print("Invalid option.")
-            pause()
-            continue
-        view_plan_memberships(plan, statuses[choice])
+    view_plan_memberships(plan)
 
 
 def yearly_membership_menu():
