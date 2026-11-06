@@ -963,7 +963,8 @@ def list_memberships(status: str = "all", plan: str = ""):
 
     for record in records:
         record["status"] = (
-            "Active" if record["start_date"] <= today <= record["end_date"]
+            "Cancelled" if record.get("cancelled_at")
+            else "Active" if record["start_date"] <= today <= record["end_date"]
             else "Expired" if record["end_date"] < today
             else "Upcoming"
         )
@@ -2300,7 +2301,7 @@ def payment_methods_report():
 def membership_report():
     memberships = list_memberships()
     yearly = [m for m in memberships if m["plan"] == "Yearly membership"]
-    monthly = [m for m in memberships if m["plan"] == "Member session, monthly"]
+    monthly = [m for m in memberships if m["plan"] in MONTHLY_PLAN_NAMES]
     return {
         "yearly": {
             "active": sum(m["status"] == "Active" for m in yearly),
