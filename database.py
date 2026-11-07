@@ -1,11 +1,9 @@
 import sqlite3
 from pathlib import Path
 from contextlib import contextmanager
-
 import os
 DB_NAME = os.environ.get("GYM_DB_NAME", "gym.db")
 DB_PATH = Path(__file__).resolve().parent / DB_NAME
-
 CATEGORY_TO_TYPE = {
     "Membership": "Service",
     "Gym Access": "Service",
@@ -14,35 +12,27 @@ CATEGORY_TO_TYPE = {
     "Supplement": "Product",
     "Merchandise": "Product",
 }
-
 DEFAULT_PRODUCTS = [
-    # Membership and Gym Access (Services: IDs 1 to 4)
     ("Yearly membership", "Membership", "Service", 30000, "Anyone", 1),
     ("Member session, daily", "Gym Access", "Service", 5000, "Members only", 1),
     ("Monthly session", "Gym Access", "Service", 120000, "Anyone", 1),
     ("Walk-in non-member, daily", "Gym Access", "Service", 7000, "Non-members only", 1),
-    # Personal Trainer (Services: IDs 5 to 7)
     ("Personal trainer, member, daily session", "Coaching", "Service", 12000, "Members only", 1),
     ("Personal trainer, member, per session (monthly basis)", "Coaching", "Service", 7000, "Members only", 1),
     ("Personal trainer, non-member", "Coaching", "Service", 14000, "Non-members only", 1),
-    # Drinks (Products: IDs 8 to 13)
     ("Bottled water", "Beverage", "Product", 1000, "Anyone", 1),
     ("Cobra", "Beverage", "Product", 2500, "Anyone", 1),
     ("Sting", "Beverage", "Product", 2500, "Anyone", 1),
     ("Vitamilk", "Beverage", "Product", 3500, "Anyone", 1),
     ("Gatorade", "Beverage", "Product", 4000, "Anyone", 1),
     ("Fit N Right Pineapple", "Beverage", "Product", 4000, "Anyone", 1),
-    # Supplements (Products: IDs 14 to 18)
     ("Optimum Nutrition Micronized Creatine Powder, 300 g (60 servings)", "Supplement", "Product", 184500, "Anyone", 1),
     ("ProtHN Monohydrate Creatine Powder, 60 servings", "Supplement", "Product", 120000, "Anyone", 1),
     ("Optimum Nutrition Superior Amino 2222, 160 tablets", "Supplement", "Product", 190000, "Anyone", 1),
     ("ProtHN Whey Protein, box", "Supplement", "Product", 180000, "Anyone", 1),
     ("Mass gainer, bag", "Supplement", "Product", 250000, "Anyone", 1),
-    # Merchandise (Products: ID 19)
     ("Insulated tumbler (white, pink, or blue)", "Merchandise", "Product", 65000, "Anyone", 1),
 ]
-
-
 @contextmanager
 def connect():
     db = sqlite3.connect(DB_PATH)
@@ -56,8 +46,6 @@ def connect():
         raise
     finally:
         db.close()
-
-
 def migrate_customers_table(db):
     cols = [r[1] for r in db.execute("PRAGMA table_info(customers)").fetchall()]
     if "name" in cols and "first_name" not in cols:
@@ -73,8 +61,6 @@ def migrate_customers_table(db):
                 (fname, lname, r["id"])
             )
         db.execute("ALTER TABLE customers DROP COLUMN name")
-
-
 def migrate_products_table(db):
     cols = [r[1] for r in db.execute("PRAGMA table_info(products)").fetchall()]
     if "type" not in cols:
@@ -89,7 +75,6 @@ def migrate_products_table(db):
         db.execute(
             "ALTER TABLE products ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1))"
         )
-
     rows = db.execute("SELECT id, category, type FROM products").fetchall()
     for r in rows:
         mapped_type = CATEGORY_TO_TYPE.get(r["category"], "Service" if r["category"] == "Service" else "Product")
@@ -97,12 +82,9 @@ def migrate_products_table(db):
             db.execute("UPDATE products SET type=? WHERE id=?", (mapped_type, r["id"]))
     db.execute("UPDATE products SET name='Monthly session' WHERE id=3")
     db.execute("UPDATE products SET name='Personal trainer, member, per session (monthly basis)' WHERE id=6")
-
     db.execute("UPDATE products SET applies_to='Members only' WHERE id IN (2, 5, 6)")
     db.execute("UPDATE products SET applies_to='Non-members only' WHERE id IN (4, 7)")
     db.execute("UPDATE products SET applies_to='Anyone' WHERE id NOT IN (2, 4, 5, 6, 7)")
-
-
 def seed_default_products(db):
     count = db.execute("SELECT COUNT(*) FROM products").fetchone()[0]
     if count == 0:
@@ -110,8 +92,6 @@ def seed_default_products(db):
             "INSERT INTO products (name, category, type, price_cents, applies_to, is_active) VALUES (?, ?, ?, ?, ?, ?)",
             DEFAULT_PRODUCTS
         )
-
-
 def seed_default_trainers(db):
     count = db.execute("SELECT COUNT(*) FROM trainers").fetchone()[0]
     if count == 0:
@@ -119,14 +99,10 @@ def seed_default_trainers(db):
             "INSERT INTO trainers (name, status) VALUES (?, ?)",
             [("Coach Alex", "Active"), ("Coach Mark", "Active")]
         )
-
-
 def add_column_if_missing(db, table, column, definition):
     cols = [r[1] for r in db.execute(f"PRAGMA table_info({table})").fetchall()]
     if column not in cols:
         db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-
-
 def migrate_sales_and_memberships(db):
     """Add pricing, discount, idempotency, and membership-link columns without touching old rows."""
     add_column_if_missing(db, "sales", "subtotal_cents", "INTEGER NOT NULL DEFAULT 0")
@@ -136,15 +112,11 @@ def migrate_sales_and_memberships(db):
     add_column_if_missing(db, "sales", "kind", "TEXT NOT NULL DEFAULT 'Product'")
     db.execute("UPDATE sales SET subtotal_cents = total_cents WHERE subtotal_cents = 0")
     db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_request_id ON sales(request_id)")
-
     add_column_if_missing(db, "sale_items", "discount_cents", "INTEGER NOT NULL DEFAULT 0")
-
     add_column_if_missing(db, "memberships", "sale_id", "INTEGER")
     add_column_if_missing(db, "memberships", "amount_cents", "INTEGER")
     add_column_if_missing(db, "memberships", "created_at", "TEXT")
     add_column_if_missing(db, "memberships", "cancelled_at", "TEXT")
-
-
 def backfill_membership_payments(db):
     """Link legacy memberships to the payment recorded with them, when the match is unambiguous."""
     groups = db.execute(
@@ -170,11 +142,8 @@ def backfill_membership_payments(db):
                     "UPDATE memberships SET amount_cents=?, created_at=? WHERE id=?",
                     (p["amount_cents"], p["created_at"], m["id"])
                 )
-
-
 def ensure_daily_session_product(db):
     """Daily gym access has its own menu. Hide the two old catalog items and add one standard item.
-
     Old items are deactivated (not deleted) so existing purchases and receipts keep their references.
     """
     db.execute(
@@ -186,8 +155,6 @@ def ensure_daily_session_product(db):
             """INSERT INTO products (name, category, type, price_cents, applies_to, is_active)
                VALUES ('Daily session', 'Gym Access', 'Service', 7000, 'Anyone', 1)"""
         )
-
-
 def seed_default_discount_rules(db):
     """Seed the daily member price without overriding any existing configured discounts."""
     daily = db.execute("SELECT id FROM products WHERE name = 'Daily session'").fetchone()
@@ -203,8 +170,6 @@ def seed_default_discount_rules(db):
                VALUES (?, 'Yearly', 'fixed', 2000, 1)""",
             (daily["id"],),
         )
-
-
 def initialize_database():
     with connect() as db:
         db.executescript("""
@@ -214,7 +179,6 @@ def initialize_database():
             last_name TEXT NOT NULL,
             phone TEXT NOT NULL
         );
-
         CREATE TABLE IF NOT EXISTS memberships (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             customer_id INTEGER NOT NULL,
@@ -223,7 +187,6 @@ def initialize_database():
             end_date TEXT NOT NULL,
             FOREIGN KEY(customer_id) REFERENCES customers(id)
         );
-
         CREATE TABLE IF NOT EXISTS payments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             customer_id INTEGER NOT NULL,
@@ -233,7 +196,6 @@ def initialize_database():
             created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
             FOREIGN KEY(customer_id) REFERENCES customers(id)
         );
-
         CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
@@ -243,7 +205,6 @@ def initialize_database():
             applies_to TEXT NOT NULL DEFAULT 'Anyone' CHECK(applies_to IN ('Anyone', 'Members only', 'Non-members only')),
             is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1))
         );
-
         CREATE TABLE IF NOT EXISTS purchases (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             customer_id INTEGER NOT NULL,
@@ -255,7 +216,6 @@ def initialize_database():
             FOREIGN KEY(product_id) REFERENCES products(id),
             FOREIGN KEY(payment_id) REFERENCES payments(id)
         );
-
         CREATE TABLE IF NOT EXISTS sales (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             receipt_no TEXT UNIQUE NOT NULL,
@@ -272,7 +232,6 @@ def initialize_database():
             voided_at TEXT,
             FOREIGN KEY(customer_id) REFERENCES customers(id)
         );
-
         CREATE TABLE IF NOT EXISTS sale_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             sale_id INTEGER NOT NULL,
@@ -285,13 +244,11 @@ def initialize_database():
             FOREIGN KEY(sale_id) REFERENCES sales(id) ON DELETE CASCADE,
             FOREIGN KEY(product_id) REFERENCES products(id)
         );
-
         CREATE TABLE IF NOT EXISTS trainers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'Active' CHECK(status IN ('Active', 'Inactive'))
         );
-
         CREATE TABLE IF NOT EXISTS trainer_sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             sale_id INTEGER NOT NULL,
@@ -306,7 +263,6 @@ def initialize_database():
             FOREIGN KEY(product_id) REFERENCES products(id),
             FOREIGN KEY(trainer_id) REFERENCES trainers(id)
         );
-
         CREATE TABLE IF NOT EXISTS visits (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             customer_id INTEGER NOT NULL,
@@ -316,7 +272,6 @@ def initialize_database():
             FOREIGN KEY(customer_id) REFERENCES customers(id),
             FOREIGN KEY(sale_id) REFERENCES sales(id)
         );
-
         CREATE TABLE IF NOT EXISTS refunds (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             sale_id INTEGER NOT NULL UNIQUE,
@@ -326,9 +281,7 @@ def initialize_database():
             created_at TEXT NOT NULL,
             FOREIGN KEY(sale_id) REFERENCES sales(id)
         );
-
         CREATE INDEX IF NOT EXISTS idx_refunds_created_at ON refunds(created_at);
-
         CREATE TABLE IF NOT EXISTS discount_rules (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             product_id INTEGER NOT NULL,
