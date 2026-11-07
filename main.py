@@ -708,8 +708,17 @@ def select_customer_from_list(title, empty_action, eligibility=None, empty_messa
         if customers is None:
             return None
         if not customers:
+            # An empty eligibility list does not necessarily mean customers exist.
+            if eligibility:
+                all_customers = request("GET", "/customers")
+                if all_customers is None:
+                    return None
+                msg = "No customer records found." if not all_customers else (
+                    empty_message if empty_message else f"No eligible customers to {empty_action}."
+                )
+            else:
+                msg = "No customer records found."
             header(title, input_screen=False, width=width, banner=active_banner)
-            msg = empty_message if empty_message else f"There are no customers to {empty_action}."
             print(f"\n{msg}")
             pause()
             return None
@@ -1267,7 +1276,13 @@ def view_plan_memberships(plan_name, status="all"):
         for record in records[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]:
             print_table_row(record, columns, compact=True)
         if not records:
-            print("No matching memberships found.")
+            if status == "all":
+                print("No membership records found.")
+            else:
+                all_records = request("GET", "/memberships", params={"status": "all", "plan": plan_name})
+                if all_records is None:
+                    return
+                print("No matching memberships found." if all_records else "No membership records found.")
         print("-" * width)
         controls = "[1] Active        [2] Expired        [3] All"
         if pages > 1:
@@ -2210,8 +2225,15 @@ def select_item_from_table(title, item_type="", name_header="Item Name", empty_m
             pause()
             return None
         if not records:
+            message = empty_message
+            if eligibility:
+                all_items = request("GET", "/products", params={"type": item_type} if item_type else None)
+                if all_items is None:
+                    return None
+                if not all_items:
+                    message = "No product or service records found."
             header(title, input_screen=False, width=width, banner=active_banner)
-            print(f"\n{empty_message}")
+            print(f"\n{message}")
             pause()
             return None
 
@@ -3559,10 +3581,28 @@ def login_screen():
     global AUTH_TOKEN, CURRENT_ROLE
     while True:
         header("CRUNCH X FITNESS - LOGIN")
-        username = input("Username [0 to exit]: ").strip()
-        if username == "0":
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            print("Username:")
+            print("Password:")
+            print("-" * 55)
+            print("[0] Exit")
+            print("-" * 55)
+            # Return to the username line; the exit option remains visible below.
+            print("\x1b[5A\x1b[10C", end="", flush=True)
+            username = input().strip()
+            if username == "0":
+                return False
+            print("\x1b[10C", end="", flush=True)
+            password = input()
+        else:
+            print("[0] Exit")
+            print("-" * 55)
+            username = input("Username: ").strip()
+            if username == "0":
+                return False
+            password = input("Password: ")
+        if password == "0":
             return False
-        password = getpass.getpass("Password: ")
         try:
             response = requests.post(
                 API + "/auth/login",
